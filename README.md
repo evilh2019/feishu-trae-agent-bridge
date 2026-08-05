@@ -1,4 +1,4 @@
-# Trae Feishu Bridge
+# Feishu Trae Agent Bridge
 
 让飞书消息在 Trae CN Agent 中处理的 VSCode 扩展桥接。通过 lark-cli + Sideband 文件协议，实现飞书 ↔ Trae Agent 的双向实时通信。
 
@@ -16,7 +16,7 @@
 ```
 飞书用户 → 飞书服务器 → lark-cli event consume
                               ↓
-                    Trae Feishu Bridge 扩展
+                    Feishu Trae Agent Bridge 扩展
                     (Session 复用 → Agent 发送 → Sideband 轮询)
                               ↓
 飞书用户 ← 飞书服务器 ← lark-cli messages-send
@@ -34,7 +34,7 @@
 
 1. **Clone 仓库**
    ```
-   git clone https://github.com/<your-username>/trae-feishu-bridge.git
+   git clone https://github.com/evilh2019/feishu-trae-agent-bridge.git
    ```
 
 2. **配置扩展**
@@ -45,7 +45,7 @@
      LARK_CLI: '',           // lark-cli 路径（留空自动探测）
      LARK_PROFILE: 'xiaot1', // lark-cli profile 名称
      FEISHU_USER_ID: '',     // ⚠️ 填入你的飞书 open_id (ou_xxx)
-     WORK_DIR: '',           // Bridge 工作目录（留空自动使用 ~/trae-feishu-bridge）
+     WORK_DIR: '',           // Bridge 工作目录（留空自动使用 ~/feishu-trae-agent-bridge）
      BRIDGE_TIMEOUT: '3600s',
    };
    ```
@@ -55,14 +55,14 @@
    将 `extension/` 目录复制到 Trae 扩展目录：
    ```
    # Windows
-   copy -r extension/ %USERPROFILE%\.trae-cn\extensions\trae-feishu-bridge\
+   copy -r extension/ %USERPROFILE%\.trae-cn\extensions\feishu-trae-agent-bridge\
    ```
 
    然后在 Trae 中执行 `Developer: Reload Window`。
 
 4. **启动桥接**
 
-   - `Ctrl+Shift+P` → "Trae Feishu Bridge: Start Bridge"
+   - `Ctrl+Shift+P` → "Feishu Trae Agent Bridge: Start Bridge"
    - 在飞书中发送消息测试
 
 ## 📚 文档

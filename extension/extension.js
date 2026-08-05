@@ -14,7 +14,7 @@ const CONFIG = {
   LARK_PROFILE: 'xiaot1',
   // 飞书用户 open_id（从飞书开放平台获取，格式: ou_xxx）
   FEISHU_USER_ID: '',
-  // Bridge 工作目录（留空使用用户主目录下的 trae-feishu-bridge）
+  // Bridge 工作目录（留空使用用户主目录下的 feishu-trae-agent-bridge）
   WORK_DIR: '',
   // lark-cli event consume 超时（默认 3600s = 1 小时）
   BRIDGE_TIMEOUT: '3600s',
@@ -41,7 +41,7 @@ function findLarkCli() {
 // ========== 初始化配置 ==========
 function initPaths() {
   const os = require('os');
-  const workDir = CONFIG.WORK_DIR || path.join(os.homedir(), 'trae-feishu-bridge');
+  const workDir = CONFIG.WORK_DIR || path.join(os.homedir(), 'feishu-trae-agent-bridge');
   if (!fs.existsSync(workDir)) fs.mkdirSync(workDir, { recursive: true });
   const repliesDir = path.join(workDir, 'replies');
   if (!fs.existsSync(repliesDir)) fs.mkdirSync(repliesDir, { recursive: true });
@@ -126,7 +126,7 @@ async function healthCheck() {
   log('');
   log('=== 健康检查完成 ===');
   outputChannel.show(true);
-  vscode.window.showInformationMessage('XiaoT1 Bridge: 健康检查完成，查看 Output 面板');
+  vscode.window.showInformationMessage('Feishu Trae Agent Bridge: 健康检查完成，查看 Output 面板');
 }
 
 async function testIcubeSend() {
@@ -201,7 +201,7 @@ async function testIcubeSend() {
     log('=== icube 测试完成 ===');
     log('请检查 chat 面板是否有测试消息和回复');
     outputChannel.show(true);
-    vscode.window.showInformationMessage('XiaoT1 Bridge: icube 测试完成，查看 Output');
+    vscode.window.showInformationMessage('Feishu Trae Agent Bridge: icube 测试完成，查看 Output');
 
   } catch (error) {
     log(`[ERROR] ${error.message}`);
@@ -513,7 +513,7 @@ async function probeApis() {
 
   log('=== 探测完成 ===');
   outputChannel.show(true);
-  vscode.window.showInformationMessage('XiaoT1 Bridge: API 探测完成，查看 Output');
+  vscode.window.showInformationMessage('Feishu Trae Agent Bridge: API 探测完成，查看 Output');
 }
 
 async function testChatSend() {
@@ -574,13 +574,13 @@ async function testChatSend() {
     log('=== 测试完成 ===');
     log('请检查 chat 面板是否有测试消息和回复');
     outputChannel.show(true);
-    vscode.window.showInformationMessage('XiaoT1 Bridge: 测试完成，请检查 chat 面板');
+    vscode.window.showInformationMessage('Feishu Trae Agent Bridge: 测试完成，请检查 chat 面板');
 
   } catch (error) {
     log(`[ERROR] ${error.message}`);
     if (error.stack) log(error.stack);
     outputChannel.show(true);
-    vscode.window.showErrorMessage(`XiaoT1 Bridge 测试失败: ${error.message}`);
+    vscode.window.showErrorMessage(`Feishu Trae Agent Bridge 测试失败: ${error.message}`);
   }
 }
 
@@ -705,8 +705,8 @@ async function probeFeishuBridge() {
     log('--- [5b] 写入真实飞书配置并启用桥 ---');
     // 使用 WSL .env 中的凭据
     const realConfig = {
-      appId: 'APP_ID_REDACTED',
-      appSecret: 'APP_SECRET_REDACTED',
+      appId: 'APP_ID_PLACEHOLDER',
+      appSecret: 'APP_SECRET_PLACEHOLDER',
       brand: 'feishu',
       enabled: true
     };
@@ -763,10 +763,10 @@ async function probeFeishuBridge() {
       }
     }
     const loginTrials = [
-      { label: 'login({appId, appSecret})', args: [{ appId: 'APP_ID_REDACTED', appSecret: 'APP_SECRET_REDACTED' }] },
-      { label: 'login({app_id, app_secret})', args: [{ app_id: 'APP_ID_REDACTED', app_secret: 'APP_SECRET_REDACTED' }] },
-      { label: 'login({appId, appSecret, brand})', args: [{ appId: 'APP_ID_REDACTED', appSecret: 'APP_SECRET_REDACTED', brand: 'feishu' }] },
-      { label: 'login("APP_ID_REDACTED", "APP_SECRET_REDACTED")', args: ['APP_ID_REDACTED', 'APP_SECRET_REDACTED'] },
+      { label: 'login({appId, appSecret})', args: [{ appId: 'APP_ID_PLACEHOLDER', appSecret: 'APP_SECRET_PLACEHOLDER' }] },
+      { label: 'login({app_id, app_secret})', args: [{ app_id: 'APP_ID_PLACEHOLDER', app_secret: 'APP_SECRET_PLACEHOLDER' }] },
+      { label: 'login({appId, appSecret, brand})', args: [{ appId: 'APP_ID_PLACEHOLDER', appSecret: 'APP_SECRET_PLACEHOLDER', brand: 'feishu' }] },
+      { label: 'login("APP_ID_PLACEHOLDER", "APP_SECRET_PLACEHOLDER")', args: ['APP_ID_PLACEHOLDER', 'APP_SECRET_PLACEHOLDER'] },
     ];
     for (const t of loginTrials) {
       try {
@@ -780,8 +780,8 @@ async function probeFeishuBridge() {
     // [5e3] 尝试写入 snake_case 格式的配置
     log('  [5e3] 尝试 snake_case 格式配置...');
     const snakeConfig = {
-      app_id: 'APP_ID_REDACTED',
-      app_secret: 'APP_SECRET_REDACTED',
+      app_id: 'APP_ID_PLACEHOLDER',
+      app_secret: 'APP_SECRET_PLACEHOLDER',
       brand: 'feishu',
       enabled: true
     };
@@ -837,8 +837,8 @@ async function probeFeishuBridge() {
     const sessionBindTrials = [
       { label: 'sessionBind.login()', args: [] },
       { label: 'sessionBind.login("")', args: [''] },
-      { label: 'sessionBind.login("APP_ID_REDACTED")', args: ['APP_ID_REDACTED'] },
-      { label: 'sessionBind.login("APP_ID_REDACTED", "APP_SECRET_REDACTED")', args: ['APP_ID_REDACTED', 'APP_SECRET_REDACTED'] },
+      { label: 'sessionBind.login("APP_ID_PLACEHOLDER")', args: ['APP_ID_PLACEHOLDER'] },
+      { label: 'sessionBind.login("APP_ID_PLACEHOLDER", "APP_SECRET_PLACEHOLDER")', args: ['APP_ID_PLACEHOLDER', 'APP_SECRET_PLACEHOLDER'] },
       { label: 'sessionBind.confirm()', args: [] },
       { label: 'sessionBind.cancel()', args: [] },
       { label: 'getWorkspaceBot()', args: [] },
@@ -985,7 +985,7 @@ async function probeFeishuBridge() {
 
   log('=== 飞书桥探测完成 ===');
   outputChannel.show(true);
-  vscode.window.showInformationMessage('XiaoT1 Bridge: 飞书桥探测完成，查看 Output');
+  vscode.window.showInformationMessage('Feishu Trae Agent Bridge: 飞书桥探测完成，查看 Output');
 }
 
 // ========== 完整飞书桥接链路 ==========
@@ -1037,7 +1037,7 @@ async function startFullBridge() {
 
   log(`lark-cli event consume 已启动 (PID: ${bridgeProcess.pid})`);
   log('等待飞书消息...');
-  log('发送 "XiaoT1 Bridge: Stop Full Bridge" 命令停止');
+  log('发送 "Feishu Trae Agent Bridge: Stop Full Bridge" 命令停止');
   log('');
 
   // 监听 stdout（事件 JSON）
@@ -1081,7 +1081,7 @@ async function startFullBridge() {
   processQueue();
 
   outputChannel.show(true);
-  vscode.window.showInformationMessage('XiaoT1 Bridge: 完整桥接已启动，等待飞书消息');
+  vscode.window.showInformationMessage('Feishu Trae Agent Bridge: 完整桥接已启动，等待飞书消息');
 }
 
 function stopFullBridge() {
@@ -1094,7 +1094,7 @@ function stopFullBridge() {
     bridgeProcess = null;
     isBridgeRunning = false;
     log('桥接已停止');
-    vscode.window.showInformationMessage('XiaoT1 Bridge: 桥接已停止');
+    vscode.window.showInformationMessage('Feishu Trae Agent Bridge: 桥接已停止');
   } else {
     log('桥接未运行');
   }
@@ -1858,10 +1858,10 @@ function sendFeishuReply(replyText) {
 
 function activate(context) {
   PATHS = initPaths();
-  outputChannel = vscode.window.createOutputChannel('Trae Feishu Bridge');
+  outputChannel = vscode.window.createOutputChannel('Feishu Trae Agent Bridge');
 
   log('========================================');
-  log('Trae Feishu Bridge 扩展已激活');
+  log('Feishu Trae Agent Bridge 扩展已激活');
   log(`版本: 0.1.1 (Session 智能复用 + 全链路日志 + PERF 计时)`);
   log(`激活时间: ${new Date().toISOString()}`);
   log(`lark-cli: ${PATHS.LARK_CLI || '(未找到)'}`);
@@ -1874,14 +1874,14 @@ function activate(context) {
 
   log('');
   log('可用命令:');
-  log('  - XiaoT1 Bridge: Health Check (健康检查)');
-  log('  - XiaoT1 Bridge: Test Chat Send (Clipboard Hack)');
-  log('  - XiaoT1 Bridge: Test Chat Send (icube Native API) ← 推荐');
-  log('  - XiaoT1 Bridge: Probe APIs (探索可用接口)');
-  log('  - XiaoT1 Bridge: Probe Feishu Bridge (探测原生飞书桥)');
-  log('  - XiaoT1 Bridge: Start Full Bridge (启动完整飞书桥接) ← 新');
-  log('  - XiaoT1 Bridge: Stop Full Bridge (停止飞书桥接) ← 新');
-  log('  - XiaoT1 Bridge: Reset Feishu Session (重置飞书持久会话) ← v0.1.0+');
+  log('  - Feishu Trae Agent Bridge: Health Check (健康检查)');
+  log('  - Feishu Trae Agent Bridge: Test Chat Send (Clipboard Hack)');
+  log('  - Feishu Trae Agent Bridge: Test Chat Send (icube Native API) ← 推荐');
+  log('  - Feishu Trae Agent Bridge: Probe APIs (探索可用接口)');
+  log('  - Feishu Trae Agent Bridge: Probe Feishu Bridge (探测原生飞书桥)');
+  log('  - Feishu Trae Agent Bridge: Start Full Bridge (启动完整飞书桥接) ← 新');
+  log('  - Feishu Trae Agent Bridge: Stop Full Bridge (停止飞书桥接) ← 新');
+  log('  - Feishu Trae Agent Bridge: Reset Feishu Session (重置飞书持久会话) ← v0.1.0+');
   log('');
   log('飞书指令: /新对话 或 /reset 可在飞书中重置会话');
   log('');
@@ -1897,7 +1897,7 @@ function activate(context) {
   const stopCmd = vscode.commands.registerCommand('xiaot1.bridge.stop', stopFullBridge);
   const resetSessionCmd = vscode.commands.registerCommand('xiaot1.bridge.resetSession', () => {
     resetFeishuSession('手动重置 (命令面板)');
-    vscode.window.showInformationMessage('XiaoT1 Bridge: 飞书 session 已重置');
+    vscode.window.showInformationMessage('Feishu Trae Agent Bridge: 飞书 session 已重置');
   });
 
   context.subscriptions.push(healthCmd, testCmd, testIcubeCmd, probeCmd, probeFeishuCmd, startCmd, stopCmd, resetSessionCmd);
@@ -1911,7 +1911,7 @@ function deactivate() {
   // 持久化 session 状态，重启后恢复
   saveSessionState();
   if (outputChannel) {
-    log('XiaoT1 Bridge 扩展已停用 (session 状态已持久化)');
+    log('Feishu Trae Agent Bridge 扩展已停用 (session 状态已持久化)');
   }
 }
 

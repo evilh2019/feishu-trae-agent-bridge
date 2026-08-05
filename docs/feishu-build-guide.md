@@ -21,7 +21,7 @@
 
 | 步骤 | 操作 | 结果 |
 |------|------|------|
-| 创建扩展 | `xiaot1-bridge` (v0.0.1) | 含 5 个命令 |
+| 创建扩展 | `feishu-trae-agent-bridge` (v0.0.1) | 含 5 个命令 |
 | 健康检查 | 探测 chat 相关命令 | `workbench.action.chat.toggle` 和 `workbench.action.chat.clear` 不存在；`workbench.action.chat.submit` 存在 |
 | icube 原生 API 发送 | `icube.chat.sendToAgentNonBlocking` | ✅ 成功发送到 chat，返回 `{sessionId}` |
 | 创建独立 session | `newSession: true` | ✅ 避免干扰当前对话 |
@@ -54,7 +54,7 @@
 | 启用桥 | `setEnabled(true)` | ❌ 返回 undefined，getEnabled() 始终 false |
 | 登录飞书 | `feishu.login()` 各种参数组合 | ❌ 全部返回 undefined，checkBound 始终 false |
 | 发现 lark-cli | 内置 `@trae-plugins/lark` 插件 CLI | ✅ 已预装，OAuth 已配置 |
-| 切换 appId | lark-cli config init + OAuth Device Flow | ✅ 用户机器人 APP_ID_REDACTED 认证成功 |
+| 切换 appId | lark-cli config init + OAuth Device Flow | ✅ 用户机器人 APP_ID_PLACEHOLDER 认证成功 |
 | 发送消息 | lark-cli im +messages-send --as bot | ✅ 成功发送 P2P 消息 |
 | 读取消息 | lark-cli im +chat-messages-list --as user | ✅ 成功读取 P2P 消息 |
 | 事件监听 | lark-cli event consume im.message.receive_v1 | ⚠️ 初始失败（WSL 冲突），解决后成功 |
@@ -210,8 +210,8 @@ const fsPath = uri.replace(/^file:\/\//, '').replace(/^\//, '');
 
 // 写入配置
 const config = {
-  appId: "APP_ID_REDACTED",     // 飞书机器人 app_id
-  appSecret: "APP_SECRET_REDACTED",  // 飞书机器人 app_secret
+  appId: "APP_ID_PLACEHOLDER",     // 飞书机器人 app_id
+  appSecret: "APP_SECRET_PLACEHOLDER",  // 飞书机器人 app_secret
   brand: "feishu",
   enabled: true
 };
@@ -307,11 +307,11 @@ icube.imBridge.wx.*                   // 微信桥（10 个命令）
 
 ### 3.1 基本信息
 
-- **位置**: `C:\Users\yuanw\.trae-cn\plugins\trae-remote-official\lark\1.0.3\bin\lark-cli.exe`
+- **位置**: `C:\Users\{username}\.trae-cn\plugins\trae-remote-official\lark\1.0.3\bin\lark-cli.exe`
 - **版本**: 1.0.3
 - **认证**: OAuth（Device Flow）
-- **已配置 appId**: `cli_aafbc6a88b791bd4`
-- **配置文件**: `C:\Users\yuanw\.lark-cli\config.json`
+- **已配置 appId**: `OTHER_APP_ID_PLACEHOLDER`
+- **配置文件**: `C:\Users\{username}\.lark-cli\config.json`
 
 ### 3.2 常用命令
 
@@ -329,7 +329,7 @@ icube.imBridge.wx.*                   // 微信桥（10 个命令）
 & "lark-cli.exe" im messages send --chat-id "oc_xxx" --msg-type "text" --text '{"text":"hello"}'
 
 # 查看事件总线日志
-# 路径: C:\Users\yuanw\.lark-cli\events\{appId}\bus.log
+# 路径: C:\Users\{username}\.lark-cli\events\{appId}\bus.log
 ```
 
 ### 3.5 原生桥 vs lark-cli：最终结论
@@ -379,7 +379,7 @@ lark-cli event status
 
 输出示例（事件总线已在后台运行 21 小时）：
 ```
-── cli_aafbc6a88b791bd4 ──
+── OTHER_APP_ID_PLACEHOLDER ──
   Bus:              running (PID 2356, uptime 21h11m45s)
   Active consumers: 1
 
@@ -448,7 +448,7 @@ lark-cli event consume <EventKey>    # 开始消费事件
 #### 事件总线日志路径
 
 ```
-C:\Users\yuanw\.lark-cli\events\{appId}\bus.log
+C:\Users\{username}\.lark-cli\events\{appId}\bus.log
 ```
 
 日志记录了长连接重连机制、心跳保活等后台运行状态。
@@ -480,7 +480,7 @@ lark-cli event consume im.message.receive_v1 --as bot --timeout 60s
 
 日志输出：
 ```
-[event] consuming as cli_aafbc6a88b791bd4 (cli_aafbc6a88b791bd4)
+[event] consuming as OTHER_APP_ID_PLACEHOLDER (OTHER_APP_ID_PLACEHOLDER)
 [event] listening for events (key=im.message.receive_v1); will exit after 1m0s timeout
 [event] to stop gracefully: send SIGTERM (kill <pid>). Avoid kill -9
 [event] ready event_key=im.message.receive_v1
@@ -490,20 +490,20 @@ lark-cli event consume im.message.receive_v1 --as bot --timeout 60s
 **结果**：60 秒内收到 0 个事件。
 
 **原因分析**：
-1. 当前 appId `cli_aafbc6a88b791bd4` 是 lark-cli 自带机器人，用户未与其互动
+1. 当前 appId `OTHER_APP_ID_PLACEHOLDER` 是 lark-cli 自带机器人，用户未与其互动
 2. 机器人需要在飞书开发者后台启用 `im.message.receive_v1` 事件订阅
 3. 机器人需要被用户添加为好友或加入群聊
 
-**结论**：lark-cli 事件消费机制工作正常（consume 命令成功启动、监听、超时退出），但需要切换到用户自己的机器人 appId `APP_ID_REDACTED` 才能接收到实际消息。
+**结论**：lark-cli 事件消费机制工作正常（consume 命令成功启动、监听、超时退出），但需要切换到用户自己的机器人 appId `APP_ID_PLACEHOLDER` 才能接收到实际消息。
 
 ### 3.5.1c lark-cli 认证状态详情（2026-08-05 验证）
 
-当前 appId `cli_aafbc6a88b791bd4`（lark-cli 自带）认证状态：
+当前 appId `OTHER_APP_ID_PLACEHOLDER`（lark-cli 自带）认证状态：
 
 | 身份 | 状态 | 说明 |
 |------|------|------|
 | bot | ready ✅ | 可用 |
-| user | ready ✅ | openId: `USER_OPEN_ID_REDACTED`，用户名: 袁蔚 |
+| user | ready ✅ | openId: `USER_OPEN_ID_PLACEHOLDER`，用户名: （用户名） |
 | tokenStatus | valid | 用户 token 有效 |
 | identity | user | 默认身份为 user |
 | expiresAt | 2026-08-05T14:25:31+08:00 | token 过期时间（自动刷新） |
@@ -527,8 +527,8 @@ lark-cli event consume im.message.receive_v1 --as bot --timeout 60s
 
 ```powershell
 # 用 --name 创建命名 profile（追加，不覆盖现有配置）
-"APP_SECRET_REDACTED" | & "lark-cli.exe" config init `
-  --app-id "APP_ID_REDACTED" `
+"APP_SECRET_PLACEHOLDER" | & "lark-cli.exe" config init `
+  --app-id "APP_ID_PLACEHOLDER" `
   --brand feishu `
   --app-secret-stdin `
   --name "xiaot1"
@@ -537,33 +537,33 @@ lark-cli event consume im.message.receive_v1 --as bot --timeout 60s
 输出：
 ```json
 {
-  "appId": "APP_ID_REDACTED",
+  "appId": "APP_ID_PLACEHOLDER",
   "appSecret": "****",
   "brand": "feishu"
 }
-OK: Configuration saved to C:\Users\yuanw\.lark-cli\config.json
+OK: Configuration saved to C:\Users\{username}\.lark-cli\config.json
 ```
 
 #### 步骤 2：修改 config.json 切换默认 app
 
-`lark-cli` 没有提供 `config use` 或 `--profile` 参数切换默认 profile。解决方式：直接编辑 `C:\Users\yuanw\.lark-cli\config.json`，把目标 app 移到 `apps` 数组第一位（无 `name` 字段的为默认 app）。
+`lark-cli` 没有提供 `config use` 或 `--profile` 参数切换默认 profile。解决方式：直接编辑 `C:\Users\{username}\.lark-cli\config.json`，把目标 app 移到 `apps` 数组第一位（无 `name` 字段的为默认 app）。
 
 修改后的 config.json 结构：
 ```json
 {
   "apps": [
     {
-      "appId": "APP_ID_REDACTED",          ← 默认 app（无 name 字段）
-      "appSecret": { "source": "keychain", "id": "appsecret:APP_ID_REDACTED" },
+      "appId": "APP_ID_PLACEHOLDER",          ← 默认 app（无 name 字段）
+      "appSecret": { "source": "keychain", "id": "appsecret:APP_ID_PLACEHOLDER" },
       "brand": "feishu",
       "users": []                                ← 待登录
     },
     {
       "name": "lark-cli-default",                ← 原 lark-cli 自带 app（加 name 保留）
-      "appId": "cli_aafbc6a88b791bd4",
-      "appSecret": { "source": "keychain", "id": "appsecret:cli_aafbc6a88b791bd4" },
+      "appId": "OTHER_APP_ID_PLACEHOLDER",
+      "appSecret": { "source": "keychain", "id": "appsecret:OTHER_APP_ID_PLACEHOLDER" },
       "brand": "feishu",
-      "users": [{ "userOpenId": "USER_OPEN_ID_REDACTED", "userName": "袁蔚" }]
+      "users": [{ "userOpenId": "USER_OPEN_ID_PLACEHOLDER", "userName": "（用户名）" }]
     }
   ]
 }
@@ -572,7 +572,7 @@ OK: Configuration saved to C:\Users\yuanw\.lark-cli\config.json
 **验证切换成功**：
 ```bash
 lark-cli config show
-# 输出: appId=APP_ID_REDACTED, profile=APP_ID_REDACTED, users=(no logged-in users)
+# 输出: appId=APP_ID_PLACEHOLDER, profile=APP_ID_PLACEHOLDER, users=(no logged-in users)
 ```
 
 #### 步骤 3：OAuth Device Flow 登录授权
@@ -593,7 +593,7 @@ lark-cli config show
 
 **生成 QR 码**（必须用相对路径）：
 ```powershell
-cd "C:\Users\yuanw\.lark-cli"
+cd "C:\Users\{username}\.lark-cli"
 & "lark-cli.exe" auth qrcode --output "auth_qr.png" "<verification_url>"
 # 输出: {"file_path":"C:\\Users\\yuanw\\.lark-cli\\auth_qr.png","ok":true}
 ```
@@ -613,7 +613,7 @@ cd "C:\Users\yuanw\.lark-cli"
 
 ```powershell
 & "lark-cli.exe" auth status
-# 期望: bot=ready, user=ready, users=袁蔚
+# 期望: bot=ready, user=ready, users=（用户名）
 ```
 
 #### 关键注意事项
@@ -640,25 +640,25 @@ lark-cli --profile xiaot1 im +chat-list     # 用 xiaot1 profile 列出聊天
 {
   "apps": [
     {
-      "appId": "cli_aafbc6a88b791bd4",       ← 默认 app（无 name，Trae 内置插件用）
-      "appSecret": { "source": "keychain", "id": "appsecret:cli_aafbc6a88b791bd4" },
+      "appId": "OTHER_APP_ID_PLACEHOLDER",       ← 默认 app（无 name，Trae 内置插件用）
+      "appSecret": { "source": "keychain", "id": "appsecret:OTHER_APP_ID_PLACEHOLDER" },
       "brand": "feishu",
-      "users": [{ "userOpenId": "USER_OPEN_ID_REDACTED", "userName": "袁蔚" }]
+      "users": [{ "userOpenId": "USER_OPEN_ID_PLACEHOLDER", "userName": "（用户名）" }]
     },
     {
       "name": "xiaot1",                       ← 命名 profile（lark-cli CLI 用 --profile xiaot1 指定）
-      "appId": "APP_ID_REDACTED",
-      "appSecret": { "source": "keychain", "id": "appsecret:APP_ID_REDACTED" },
+      "appId": "APP_ID_PLACEHOLDER",
+      "appSecret": { "source": "keychain", "id": "appsecret:APP_ID_PLACEHOLDER" },
       "brand": "feishu",
-      "users": [{ "userOpenId": "USER_OPEN_ID_REDACTED", "userName": "袁蔚" }]
+      "users": [{ "userOpenId": "ou_xxx", "userName": "（用户名）" }]
     }
   ]
 }
 ```
 
 **事件总线冲突解决方案**：
-- 问题：如果把 APP_ID_REDACTED 设为默认 app，Trae 内置 lark 插件也会用这个 appId 连接事件总线，导致 `online_instance_cnt=1` 冲突
-- 解决：保持 cli_aafbc6a88b791bd4 为默认 app（Trae 内置插件用），lark-cli CLI 用 `--profile xiaot1` 指定用户机器人 app
+- 问题：如果把 APP_ID_PLACEHOLDER 设为默认 app，Trae 内置 lark 插件也会用这个 appId 连接事件总线，导致 `online_instance_cnt=1` 冲突
+- 解决：保持 OTHER_APP_ID_PLACEHOLDER 为默认 app（Trae 内置插件用），lark-cli CLI 用 `--profile xiaot1` 指定用户机器人 app
 - 结果：两个 app 互不干扰，事件总线正常启动
 
 ### 3.5.1e 消息收发实测（2026-08-05）✅
@@ -667,8 +667,8 @@ lark-cli --profile xiaot1 im +chat-list     # 用 xiaot1 profile 列出聊天
 
 ```powershell
 lark-cli --profile xiaot1 im +messages-send --as bot `
-  --user-id "USER_OPEN_ID_REDACTED" `
-  --text "xiaot1-bridge 测试：请回复任意内容"
+  --user-id "ou_xxx" `
+  --text "feishu-trae-agent-bridge 测试：请回复任意内容"
 ```
 
 输出：
@@ -677,7 +677,7 @@ lark-cli --profile xiaot1 im +messages-send --as bot `
   "ok": true,
   "identity": "bot",
   "data": {
-    "chat_id": "oc_41e9193d419c16daae38dbf3ab8cb473",
+    "chat_id": "CHAT_ID_PLACEHOLDER",
     "create_time": "2026-08-05 12:50:13",
     "message_id": "om_x100b68185e911ca0dd42c966207fada"
   }
@@ -687,13 +687,13 @@ lark-cli --profile xiaot1 im +messages-send --as bot `
 **关键发现**：
 - `--user-id` 参数可指定用户 open_id（与 `--chat-id` 互斥），用于发送 P2P 消息
 - bot 身份可以直接给用户发 P2P 消息
-- 返回的 `chat_id` 是 P2P chat ID（oc_41e9193d419c16daae38dbf3ab8cb473）
+- 返回的 `chat_id` 是 P2P chat ID（CHAT_ID_PLACEHOLDER）
 
 #### 步骤 2：user 身份读取消息 ✅
 
 ```powershell
 lark-cli --profile xiaot1 im +chat-messages-list --as user `
-  --chat-id "oc_41e9193d419c16daae38dbf3ab8cb473" `
+  --chat-id "CHAT_ID_PLACEHOLDER" `
   --page-size 5
 ```
 
@@ -711,17 +711,17 @@ lark-cli --profile xiaot1 im +chat-messages-list --as user `
         "message_id": "om_x100b68186fac0ca4b150553149a2cd9",
         "msg_type": "text",
         "sender": {
-          "id": "USER_OPEN_ID_REDACTED",
-          "name": "袁蔚",
+          "id": "ou_xxx",
+          "name": "（用户名）",
           "sender_type": "user"
         }
       },
       {
-        "content": "xiaot1-bridge 测试：请回复任意内容",  ← 机器人发送
+        "content": "feishu-trae-agent-bridge 测试：请回复任意内容",  ← 机器人发送
         "create_time": "2026-08-05 12:50",
         "message_id": "om_x100b68185e911ca0dd42c966207fada",
         "sender": {
-          "id": "APP_ID_REDACTED",
+          "id": "APP_ID_PLACEHOLDER",
           "id_type": "app_id",
           "sender_type": "app"
         }
@@ -745,7 +745,7 @@ lark-cli --profile xiaot1 event consume im.message.receive_v1 --as bot --timeout
 
 日志：
 ```
-[event] consuming as xiaot1 (APP_ID_REDACTED)
+[event] consuming as xiaot1 (APP_ID_PLACEHOLDER)
 [event] listening for events (key=im.message.receive_v1); will exit after 1m30s timeout
 [event] ready event_key=im.message.receive_v1
 [event] exited — received 0 event(s) in 1m29s (reason: timeout)
@@ -759,7 +759,7 @@ lark-cli --profile xiaot1 event consume im.message.receive_v1 --as bot --timeout
 
 **解决方案**：
 1. 登录飞书开发者后台（https://open.feishu.cn）
-2. 找到机器人应用 `APP_ID_REDACTED`
+2. 找到机器人应用 `APP_ID_PLACEHOLDER`
 3. 在"事件订阅"中启用 `im.message.receive_v1`
 4. 选择"长连接"方式（无需配置回调 URL）
 
@@ -798,10 +798,10 @@ PID 286589 python3 /root/xiaot1/ws_client.py        (Aug03 启动, 小T 主服�
 #### WSL `/root/xiaot1/.env` 配置
 
 ```bash
-LARK_APP_ID=APP_ID_REDACTED                    # 同一个机器人
-LARK_APP_SECRET=APP_SECRET_REDACTED
-LARK_AUTHORIZED_USER_ID=USER_OPEN_ID_REDACTED  # 同一个用户
-LARK_DEFAULT_CHAT_ID=oc_41e9193d419c16daae38dbf3ab8cb473      # 同一个 P2P chat
+LARK_APP_ID=APP_ID_PLACEHOLDER                    # 同一个机器人
+LARK_APP_SECRET=APP_SECRET_PLACEHOLDER
+LARK_AUTHORIZED_USER_ID=ou_xxx  # 同一个用户
+LARK_DEFAULT_CHAT_ID=CHAT_ID_PLACEHOLDER      # 同一个 P2P chat
 ```
 
 #### WSL `ws_client.py` 架构
@@ -851,10 +851,10 @@ lark-cli --profile xiaot1 event consume im.message.receive_v1 --as bot --timeout
   "timestamp": "1785905966860",
   "message_id": "om_x100b68187c28ed38b4a0b96ed4dcee5",
   "create_time": "1785905966444",
-  "chat_id": "oc_41e9193d419c16daae38dbf3ab8cb473",
+  "chat_id": "CHAT_ID_PLACEHOLDER",
   "chat_type": "p2p",
   "message_type": "text",
-  "sender_id": "USER_OPEN_ID_REDACTED",
+  "sender_id": "ou_xxx",
   "content": "好了没"
 }
 ```
@@ -882,9 +882,9 @@ lark-cli --profile xiaot1 event consume im.message.receive_v1 --as bot --timeout
 
 ### 3.5.2 lark-cli 配置
 
-- **路径**: `C:\Users\yuanw\.trae-cn\plugins\trae-remote-official\lark\1.0.3\bin\lark-cli.exe`
-- **当前 appId**: `cli_aafbc6a88b791bd4`（lark-cli 自带）
-- **目标 appId**: `APP_ID_REDACTED`（用户的机器人）
+- **路径**: `C:\Users\{username}\.trae-cn\plugins\trae-remote-official\lark\1.0.3\bin\lark-cli.exe`
+- **当前 appId**: `OTHER_APP_ID_PLACEHOLDER`（lark-cli 自带）
+- **目标 appId**: `APP_ID_PLACEHOLDER`（用户的机器人）
 - **OAuth 配置**: `connector.json` 中定义 `type: "oauth"`, `auth_policy: "ON_INVOKE"`
 - **环境变量映射**:
   - `LARKSUITE_CLI_USER_ACCESS_TOKEN` ← `${connector.feishu.ACCESS_TOKEN}`
@@ -904,8 +904,8 @@ lark-cli --profile xiaot1 event consume im.message.receive_v1 --as bot --timeout
 **camelCase 格式（已尝试，未成功绑定）：**
 ```json
 {
-  "appId": "APP_ID_REDACTED",
-  "appSecret": "APP_SECRET_REDACTED",
+  "appId": "APP_ID_PLACEHOLDER",
+  "appSecret": "APP_SECRET_PLACEHOLDER",
   "brand": "feishu",
   "enabled": true
 }
@@ -914,8 +914,8 @@ lark-cli --profile xiaot1 event consume im.message.receive_v1 --as bot --timeout
 **snake_case 格式（已尝试，未成功绑定）：**
 ```json
 {
-  "app_id": "APP_ID_REDACTED",
-  "app_secret": "APP_SECRET_REDACTED",
+  "app_id": "APP_ID_PLACEHOLDER",
+  "app_secret": "APP_SECRET_PLACEHOLDER",
   "brand": "feishu",
   "enabled": true
 }
@@ -989,15 +989,15 @@ mail        minutes    note  okr    sheets   slides  task  vc  whiteboard  wiki
 | 项目 | 路径 |
 |------|------|
 | 原生桥配置 | `{userDataDir}/{userId}/{hash}/channel_config.json` |
-| lark-cli 配置 | `C:\Users\yuanw\.lark-cli\config.json` |
-| lark-cli 事件总线 | `C:\Users\yuanw\.lark-cli\events\{appId}\bus.log` |
-| lark-cli 插件 | `C:\Users\yuanw\.trae-cn\plugins\trae-remote-official\lark\1.0.3\` |
-| Bridge 扩展 | `C:\Users\yuanw\.trae-cn\extensions\xiaot1-bridge\` |
-| Bridge 扩展源码 | `C:\Users\yuanw\.trae-cn\extensions\xiaot1-bridge\extension.js` |
+| lark-cli 配置 | `C:\Users\{username}\.lark-cli\config.json` |
+| lark-cli 事件总线 | `C:\Users\{username}\.lark-cli\events\{appId}\bus.log` |
+| lark-cli 插件 | `C:\Users\{username}\.trae-cn\plugins\trae-remote-official\lark\1.0.3\` |
+| Bridge 扩展 | `C:\Users\{username}\.trae-cn\extensions\feishu-trae-agent-bridge\` |
+| Bridge 扩展源码 | `C:\Users\{username}\.trae-cn\extensions\feishu-trae-agent-bridge\extension.js` |
 | sideband 回复目录 | `e:\Trae\feishu-bridge\replies\` |
 | Bridge 运行日志 | `e:\Trae\feishu-bridge\bridge.log` |
 | 飞书凭据（WSL） | `/root/xiaot1/.env` |
-| 项目记忆 | `C:\Users\yuanw\.trae-cn\memory\projects\-e-Trae--p2-89151a9e6f80569d2e16\project_memory.md` |
+| 项目记忆 | `C:\Users\{username}\.trae-cn\memory\projects\-e-Trae--p2-89151a9e6f80569d2e16\project_memory.md` |
 
 ---
 
@@ -1005,11 +1005,11 @@ mail        minutes    note  okr    sheets   slides  task  vc  whiteboard  wiki
 
 | 项目 | 值 | 用途 |
 |------|------|------|
-| 用户机器人 APP_ID | `APP_ID_REDACTED` | Bridge 使用（--profile xiaot1） |
-| 用户机器人 APP_SECRET | `APP_SECRET_REDACTED` | Bridge 使用 |
-| 认证用户 open_id | `USER_OPEN_ID_REDACTED` | 袁蔚 |
-| 默认 P2P chat_id | `oc_41e9193d419c16daae38dbf3ab8cb473` | 机器人↔袁蔚 P2P 会话 |
-| Trae 内置 appId | `cli_aafbc6a88b791bd4` | lark-cli 默认 profile（Trae 内置插件用） |
+| 用户机器人 APP_ID | `APP_ID_PLACEHOLDER` | Bridge 使用（--profile xiaot1） |
+| 用户机器人 APP_SECRET | `APP_SECRET_PLACEHOLDER` | Bridge 使用 |
+| 认证用户 open_id | `ou_xxx` | （用户名） |
+| 默认 P2P chat_id | `CHAT_ID_PLACEHOLDER` | 机器人↔（用户名） P2P 会话 |
+| Trae 内置 appId | `OTHER_APP_ID_PLACEHOLDER` | lark-cli 默认 profile（Trae 内置插件用） |
 
 ---
 
@@ -1022,7 +1022,7 @@ mail        minutes    note  okr    sheets   slides  task  vc  whiteboard  wiki
 5. **lark-cli event consume 1 小时超时** — 到期后进程退出，需手动重新 Start Full Bridge，尚未实现自动续期
 6. **仅支持 P2P 消息** — 群聊消息暂未实现
 7. **仅支持文本消息** — 图片/文件/卡片消息暂未处理
-8. **硬编码单个用户** — `FEISHU_USER_ID` 固定为袁蔚的 open_id
+8. **硬编码单个用户** — `FEISHU_USER_ID` 固定为（用户名）的 open_id
 9. **扩展缓存问题** — 修改代码后需删除 `CachedData` 目录才能加载最新代码
 10. **WSL 冲突** — 如需恢复 WSL 小T 的飞书能力，需同时停用 Windows Bridge
 11. **持久 session 上下文膨胀** — 长期复用会导致 Agent 上下文过长，需定期用 `/新对话` 重置
@@ -1049,7 +1049,7 @@ mail        minutes    note  okr    sheets   slides  task  vc  whiteboard  wiki
 
 ```powershell
 # 设置 PATH（可选）
-$env:PATH = "C:\Users\yuanw\.trae-cn\plugins\trae-remote-official\lark\1.0.3\bin;$env:PATH"
+$env:PATH = "C:\Users\{username}\.trae-cn\plugins\trae-remote-official\lark\1.0.3\bin;$env:PATH"
 
 # 认证状态
 lark-cli --profile xiaot1 auth status
@@ -1064,10 +1064,10 @@ lark-cli --profile xiaot1 event status
 lark-cli --profile xiaot1 im +chat-list --as user --types p2p,group --format json
 
 # 发送消息
-lark-cli --profile xiaot1 im +messages-send --as bot --user-id "USER_OPEN_ID_REDACTED" --text "测试"
+lark-cli --profile xiaot1 im +messages-send --as bot --user-id "ou_xxx" --text "测试"
 
 # 读取消息
-lark-cli --profile xiaot1 im +chat-messages-list --as user --chat-id "oc_41e9193d419c16daae38dbf3ab8cb473" --page-size 5
+lark-cli --profile xiaot1 im +chat-messages-list --as user --chat-id "CHAT_ID_PLACEHOLDER" --page-size 5
 ```
 
 ---
@@ -1079,7 +1079,7 @@ lark-cli --profile xiaot1 im +chat-messages-list --as user --chat-id "oc_41e9193
 2. ✅ 确认 browser_use/CDP/SQLite/tabGroups 等死路
 3. ✅ 发现 `icube.imBridge.feishu.*` 原生飞书桥（25 个命令）
 4. ✅ 发现内置 lark-cli CLI 工具
-5. ✅ 创建 xiaot1-bridge 扩展 MVP（7 个命令）
+5. ✅ 创建 feishu-trae-agent-bridge 扩展 MVP（7 个命令）
 6. ✅ 打通发送链路：sendToAgentNonBlocking → getSessionRunningStatus
 7. ✅ 定位 channel_config.json 路径和格式
 8. ✅ 确认原生桥使用 OAuth 认证，`feishu.login` 走不通
@@ -1089,7 +1089,7 @@ lark-cli --profile xiaot1 im +chat-messages-list --as user --chat-id "oc_41e9193
 12. ✅ 验证 lark-cli 事件总线系统（`event list/status/consume/schema`）
 13. ✅ 确认 lark-cli 支持 `im.message.receive_v1` 长连接事件监听
 14. ✅ 分析 bus.log，确认 30 秒 consumer 轮询保活机制
-15. ✅ 配置 lark-cli 使用用户机器人 appId `APP_ID_REDACTED`（--profile xiaot1）
+15. ✅ 配置 lark-cli 使用用户机器人 appId `APP_ID_PLACEHOLDER`（--profile xiaot1）
 16. ✅ 完成 OAuth Device Flow 授权
 17. ✅ 发现 `--profile` 全局参数，解决事件总线冲突
 18. ✅ bot 身份发送 P2P 消息成功
@@ -1362,7 +1362,7 @@ async function trySendToAgent(message, sidebandFile) {
 ```javascript
 const LARK_CLI = 'C:\\Users\\yuanw\\.trae-cn\\plugins\\trae-remote-official\\lark\\1.0.3\\bin\\lark-cli.exe';
 const LARK_PROFILE = 'xiaot1';           // 用户机器人 profile
-const FEISHU_USER_ID = 'USER_OPEN_ID_REDACTED';  // 袁蔚
+const FEISHU_USER_ID = 'ou_xxx';  // （用户名）
 const REPLIES_DIR = 'e:\\Trae\\feishu-bridge\\replies';         // sideband 文件目录
 const BRIDGE_TIMEOUT = '3600s';          // event consume 超时（1小时）
 const SESSION_RESET_TIMEOUT = 30 * 60 * 1000;  // 飞书 session 超时重置（30分钟）
@@ -1388,7 +1388,7 @@ WSL 上运行两个飞书 WebSocket 客户端进程：
 - PID 74097: `python3 -m lark_integration.ws_client`（CC1 遗留，Jul31 启动）
 - PID 286589: `python3 /root/xiaot1/ws_client.py`（小T 主服务，Aug03 启动）
 
-两者都使用同一 appId `APP_ID_REDACTED`，通过飞书 WebSocket 长连接接收消息。
+两者都使用同一 appId `APP_ID_PLACEHOLDER`，通过飞书 WebSocket 长连接接收消息。
 
 ### 11.2 迁移决策
 
@@ -1649,8 +1649,8 @@ if (fs.existsSync(sidebandFile)) {
 
 **实测验证**：`icube.chat.sendToAgentNonBlocking` 确实支持 `sessionId` 参数，日志显示返回的 sessionId 与传入的一致：
 ```
-[Session] 尝试复用 session: 6a72fe84e7ba...
-[Session] 尝试 sessionId 参数, 返回 sessionId: 6a72fe84e7ba
+[Session] 尝试复用 session: SESSION_ID_PLACEHOLDER...
+[Session] 尝试 sessionId 参数, 返回 sessionId: SESSION_ID_PLACEHOLDER
 [Session] ✅ 复用成功
 ```
 
@@ -1799,7 +1799,7 @@ function sendFeishuReply(replyText) {
 1. **前置条件**：
    - 已停止 WSL ws_client.py（`wsl -d Ubuntu-22.04 -- bash -c "kill 74097 286589"`）
    - lark-cli 已配置 xiaot1 profile 并完成 OAuth 认证
-   - `C:\Users\yuanw\.lark-cli\config.json` 配置正确
+   - `C:\Users\{username}\.lark-cli\config.json` 配置正确
    - `e:\Trae\feishu-bridge\replies\` 目录存在
 
 2. **启动步骤**：
@@ -1843,6 +1843,6 @@ v0.1.1 (08-05) → Session 智能复用策略 D + 全链路详细日志 + PERF 7
 **状态**：端到端链路已打通 ✅
 
 **相关文件**：
-- 扩展源码：[extension.js](file:///C:/Users/yuanw/.trae-cn/extensions/xiaot1-bridge/extension.js)
+- 扩展源码：[extension.js](file:///C:/Users/yuanw/.trae-cn/extensions/feishu-trae-agent-bridge/extension.js)
 - 运行日志：[bridge.log](file:///E:/Trae/feishu-bridge/bridge.log)
 - 启动脚本：[start-trae-cdp.bat](file:///E:/Trae/feishu-bridge/start-trae-cdp.bat)

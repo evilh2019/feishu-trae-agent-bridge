@@ -1,9 +1,9 @@
 {
-  "name": "trae-feishu-bridge",
-  "displayName": "Trae Feishu Bridge",
-  "description": "飞书消息到 Trae CN chat 的桥接扩展 - 让飞书消息在 Trae Agent 中处理，支持多轮对话、全链路日志和性能计时",
+  "name": "feishu-trae-agent-bridge",
+  "displayName": "Feishu Trae Agent Bridge",
+  "description": "飞书消息到 Trae CN Agent 的桥接扩展 - 让飞书消息在 Trae Agent 中处理，支持多轮对话、全链路日志和性能计时",
   "version": "0.1.1",
-  "publisher": "trae-community",
+  "publisher": "evilh2019",
   "license": "MIT",
   "private": false,
   "engines": {
@@ -13,32 +13,32 @@
     "onStartupFinished"
   ],
   "main": "./extension.js",
-  "keywords": ["feishu", "飞书", "trae", "bridge", "lark"],
+  "keywords": ["feishu", "飞书", "trae", "bridge", "lark", "agent"],
   "contributes": {
     "commands": [
       {
         "command": "xiaot1.bridge.health",
-        "title": "Trae Feishu Bridge: Health Check",
+        "title": "Feishu Trae Agent Bridge: Health Check",
         "category": "Feishu Bridge"
       },
       {
         "command": "xiaot1.bridge.start",
-        "title": "Trae Feishu Bridge: Start Bridge (启动飞书桥接)",
+        "title": "Feishu Trae Agent Bridge: Start Bridge (启动飞书桥接)",
         "category": "Feishu Bridge"
       },
       {
         "command": "xiaot1.bridge.stop",
-        "title": "Trae Feishu Bridge: Stop Bridge (停止飞书桥接)",
+        "title": "Feishu Trae Agent Bridge: Stop Bridge (停止飞书桥接)",
         "category": "Feishu Bridge"
       },
       {
         "command": "xiaot1.bridge.resetSession",
-        "title": "Trae Feishu Bridge: Reset Session (重置会话)",
+        "title": "Feishu Trae Agent Bridge: Reset Session (重置会话)",
         "category": "Feishu Bridge"
       },
       {
         "command": "xiaot1.bridge.probe",
-        "title": "Trae Feishu Bridge: Probe APIs (探索可用接口)",
+        "title": "Feishu Trae Agent Bridge: Probe APIs (探索可用接口)",
         "category": "Feishu Bridge"
       }
     ]
