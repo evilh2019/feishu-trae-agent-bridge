@@ -1,0 +1,20 @@
+# Runtime files
+replies/
+session_state.json
+bridge.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+
+# Node
+node_modules/
+npm-debug.log*
+
+# Trae workspace
+CachedData/
