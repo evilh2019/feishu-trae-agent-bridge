@@ -2,6 +2,7 @@
 replies/
 session_state.json
 bridge.log
+debug.log
 bridge.pid
 
 # OS files
