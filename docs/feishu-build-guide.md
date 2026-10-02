@@ -1,7 +1,7 @@
 # Trae CN 飞书桥接构建指南
 
 > 基于 2026-08-03 ~ 2026-08-05 探索与实现过程整理
-> 状态：端到端链路已打通 ✅（v0.1.1 Session 智能复用 + 全链路日志 + PERF 计时，飞书↔Trae Agent 双向通信已验证）
+> 状态：端到端链路已打通 ✅（v0.1.2 保活自动重启 + 孤儿进程清理，只要 Trae 打开飞书即持续在线；飞书↔Trae Agent 双向通信已验证）
 
 ---
 
@@ -125,7 +125,7 @@ Trae CN 有三条飞书集成路径，**当前采用路径 B+C 混合方案**：
 | **B: lark-cli** | 内置 `@trae-plugins/lark` 插件 CLI | 飞书 API 调用（发送/读取/事件监听） | ✅ 已采用，核心引擎 |
 | **C: 自建扩展** | VSCode 扩展 + sideband 文件协议 | 绕过 Trae 内部状态读取限制 | ✅ 已采用，回复读取方案 |
 
-### 当前实际架构（v0.1.1）
+### 当前实际架构（v0.1.2）
 
 ```
 ┌─────────────┐    飞书消息     ┌──────────────┐
@@ -134,9 +134,11 @@ Trae CN 有三条飞书集成路径，**当前采用路径 B+C 混合方案**：
                                        │ im.message.receive_v1
                                        ↓
 ┌──────────────────────────────────────────────────────────────┐
-│  XiaoT1 Bridge 扩展 (extension.js v0.1.1)                   │
+│  Feishu Trae Agent Bridge 扩展 (extension.js v0.1.2)        │
 │                                                              │
 │  ① lark-cli event consume (子进程, --profile xiaot1)          │
+│     ← [保活] 激活时自动启动 + 启动前清理孤儿进程              │
+│     ← [保活] 退出自动重启（指数退避 3s→60s，上限 60s）        │
 │     → stdout JSON 事件 → enqueueEvent → 去重 → 消息队列       │
 │     → [PERF] T0 事件接收时间戳 + 日志                        │
 │                                                              │
@@ -1019,7 +1021,7 @@ mail        minutes    note  okr    sheets   slides  task  vc  whiteboard  wiki
 2. **`icube.webview.sendCommand`** 卡死 — 绝不能带参数调用
 3. **原生桥 `feishu.*` 命令全部返回 `undefined`** — login/reply/streamStart 等均不可用，已放弃此路径
 4. **Sideband 文件协议依赖 Agent 配合** — Agent 必须执行 Write 工具写入指定文件，如果 Agent 忽略指令则回复丢失（v0.0.10 增加超时恢复机制降低丢失风险）
-5. **lark-cli event consume 1 小时超时** — 到期后进程退出，需手动重新 Start Full Bridge，尚未实现自动续期
+5. **lark-cli event consume 1 小时超时** — 到期后进程自动退出；v0.1.2 起由保活机制自动重启（退避 3s~60s），无需手动干预（重启瞬间约 3~5s 不可用）
 6. **仅支持 P2P 消息** — 群聊消息暂未实现
 7. **仅支持文本消息** — 图片/文件/卡片消息暂未处理
 8. **硬编码单个用户** — `FEISHU_USER_ID` 固定为（用户名）的 open_id
@@ -1101,10 +1103,10 @@ lark-cli --profile xiaot1 im +chat-messages-list --as user --chat-id "CHAT_ID_PL
 24. ✅ 端到端联调成功：飞书消息 → lark-cli → Trae Agent → sideband → lark-cli → 飞书回复
 25. ✅ v0.0.10 超时保护：maxWait 300s→600s + 30s 宽限期恢复 + 立即首次检查
 26. ✅ package.json 添加 `onStartupFinished` 激活事件（扩展自动激活，但桥接仍需手动 Start）
+27. ✅ v0.1.2 保活：扩展激活自动启动桥接 + 进程退出自动重启（指数退避 3s~60s）
+28. ✅ v0.1.2 孤儿进程清理 + lark-cli 路径自动探测
 
 ### 待完成 📋
-27. 📋 桥接自动启动（activate 时自动调用 Start Full Bridge，当前仅自动激活扩展）
-28. 📋 lark-cli event consume 1 小时超时后自动续期
 29. 📋 群聊消息支持（当前仅 P2P）
 30. 📋 非文本消息处理（图片/文件/卡片消息）
 31. 📋 多用户支持（当前硬编码单个 user-id）
@@ -1126,6 +1128,7 @@ lark-cli --profile xiaot1 im +chat-messages-list --as user --chat-id "CHAT_ID_PL
 | v0.0.10 | 08-05 下午 | 超时保护：maxWait 300s→600s + 30s 宽限期重试 + 立即首次检查 | ⚠️ 复杂任务触发超时恢复机制 |
 | v0.1.0 | 08-05 下午 | 持久 session 复用：飞书消息共享同一 session + `/新对话` 重置 + 30min 超时自动重置 | 🔄 首条创建 session，后续复用保持上下文 |
 | v0.1.1 | 08-05 晚 | Session 智能复用策略 D（session 丢失时复用当前 chat 面板会话）+ 全链路详细日志（7 个模块标签）+ PERF 计时（7 阶段时间戳覆盖所有退出路径） | ✅ Session 健壮性大幅提升；日志结构化便于排查；耗时数据可指导后续优化 |
+| v0.1.2 | 08-05 晚 | 保活机制：扩展激活自动启动桥接 + lark-cli 退出自动重启（指数退避 3s→60s，连接恢复后清零）+ 孤儿进程清理（PID 文件 + 进程名校验，防双连接重复消息）+ lark-cli 路径自动探测 | ✅ 只要 Trae 打开，飞书持续在线；异常/超时退出自动恢复，无需手动干预 |
 
 ### 10.2 v0.0.7 首次失败分析
 
@@ -1784,11 +1787,14 @@ function sendFeishuReply(replyText) {
 - 全链路结构化日志（7 模块标签体系）
 - PERF 7 阶段耗时计时（覆盖所有退出路径）
 - 内存保护（timingMap 自动清理）
+- 保活：扩展激活时自动启动桥接（无需手动点命令）
+- 保活：lark-cli 退出自动重启（指数退避 3s~60s，连接恢复后清零）
+- 孤儿进程清理（PID 文件 + 进程名校验，防 Trae 异常退出后的双连接）
 
 ⚠️ **当前限制**：
 - 仅支持 P2P 消息（群聊未实现）
 - 仅支持文本消息（图片/文件/卡片未处理）
-- lark-cli event consume 1 小时超时（需手动重启）
+- lark-cli event consume 1 小时超时（v0.1.2 起自动重启，但重启瞬间约 3~5s 不可用）
 - 硬编码单个用户（FEISHU_USER_ID 固定）
 - 依赖 Agent 配合写文件（如 Agent 忽略指令则回复丢失）
 - 扩展缓存问题（修改代码后需删除 CachedData）
@@ -1827,22 +1833,110 @@ v0.0.9 (08-05) → fs.watch + 自适应轮询 + 双重校验（10s 回复延迟�
 v0.0.10 (08-05) → 超时保护：600s + 30s 宽限期恢复（防消息丢失）
 v0.1.0 (08-05) → 持久 Session 复用 + 会话重置（支持多轮对话）
 v0.1.1 (08-05) → Session 智能复用策略 D + 全链路详细日志 + PERF 7 阶段计时
+v0.1.2 (08-05) → 保活自动重启（指数退避）+ 孤儿进程清理 + lark-cli 路径自动探测
 ```
 
-### 12.10 文档维护说明
+## 十三、保活机制实现细节（v0.1.2）
 
-本文档记录了 Trae CN 飞书桥接的完整实现过程，包括：
+### 13.1 设计目标
+
+> **只要 Trae 处于打开状态，飞书就保持连接、可随时对话；只有当 Trae 自己退出时才断开。**
+
+### 13.2 三大机制
+
+| 机制 | 触发时机 | 行为 |
+|------|----------|------|
+| **激活自启动** | 扩展激活（`onStartupFinished`） | 自动 `startFullBridge()`，无需手动点命令 |
+| **退出自动重启** | lark-cli 进程退出或启动失败 | 指数退避 3s→6s→…→60s 后重启；连接恢复后计数清零 |
+| **孤儿进程清理** | 每次启动桥接前 | 读 PID 文件 → 校验进程名确为 `lark-cli.exe` → 清理残留 |
+
+### 13.3 关键设计点
+
+1. **区分手动停止与异常退出**：`bridgeManuallyStopped` 标志。用户点 `Stop Bridge` 后不自动重启；异常退出才重启。
+2. **指数退避防风暴**：`delay = min(3000 × 2^(n-1), 60000)`，避免 lark-cli 持续起不来时疯狂重启。
+3. **连接成功即清零退避**：stderr 出现 `connected` / `ready event_key` 时把 `bridgeRestartAttempts` 归零。
+4. **自动重启跳过 sideband 清理**：`startFullBridge({isRestart:true})` 时不删除 `replies/` 里的文件，避免误删正在处理的回复。
+5. **孤儿清理防双连接**：Trae 异常退出（不走 `deactivate`）时子进程可能残留，导致下次启动出现两个 lark-cli 同时订阅、消息重复。PID 文件 + 进程名校验可安全清理，且**只杀名字确为 lark-cli 的进程**，避免误杀 PID 被回收后的其他进程。
+
+### 13.4 日志样例
+
+```
+[保活] 扩展已激活，自动启动飞书桥接...
+=== 启动完整飞书桥接 ===
+[lark-cli] 自动探测到路径: ...\lark\1.0.3\bin\lark-cli.exe
+[孤儿清理] 历史 PID 12345 已不存在，无需清理
+lark-cli event consume 已启动 (PID: 67890)
+[lark-cli] [source] feishu-websocket: connected        ← 连接成功，退避计数清零
+...
+lark-cli event consume 已退出 (code: 0, signal: null)   ← 1 小时超时
+[保活] lark-cli 已退出 (code=0, signal=null)，3000ms 后自动重启 (第 1 次)
+[保活] 正在自动重启桥接...
+=== [保活] 自动重启完整飞书桥接 ===
+```
+
+---
+
+## 十四、Trae 升级影响评估
+
+### 14.1 结论
+
+**整体方案不会因 Trae 升级而"全盘失效"**——核心逻辑（Sideband 协议、消息队列、保活、去重、计时）都是扩展内部自研代码，与 Trae 版本无关。
+但存在 **3 类外部依赖** 需要关注，其中 `lark-cli` 路径最脆弱（**v0.1.2 已加固**）。
+
+### 14.2 依赖风险清单
+
+| 依赖项 | 风险 | 升级后可能的变化 | 现状 |
+|--------|------|------------------|------|
+| **lark-cli 可执行路径（含版本号）** | 🔴 高 | 插件升级后目录变 `1.0.4`…，硬编码即失效 | ✅ 已改为自动探测最新版本目录 |
+| **`icube.chat.sendToAgentNonBlocking`** | 🟠 中高 | 命令名/参数可能变（参数含 `enableUnstableFields`） | ⚠️ 未加固，升级后需回归 |
+| **`icube.chat.getSessionRunningStatus`** | 🟠 中 | 同上 | ⚠️ 未加固 |
+| **`icube.chat.getCurrentSessionId`** | 🟠 中 | 同上 | ⚠️ 未加固 |
+| **lark-cli 子命令语法** | 🟡 低-中 | 子命令或参数可能调整 | ⚠️ 未加固 |
+| **Sideband 文件协议** | 🟢 低 | 纯文件读写约定 | ✅ 不受影响 |
+| **VSCode 扩展 API** | 🟢 低 | 标准公开 API | ✅ 不受影响 |
+| **保活/队列/去重/日志** | 🟢 无 | 纯自研逻辑 | ✅ 不受影响 |
+
+### 14.3 升级后回归清单（3 步）
+
+1. **确认 lark-cli 路径**：日志中出现 `[lark-cli] 自动探测到路径: ...\lark\<新版本>\bin\lark-cli.exe`。
+2. **端到端验证**：飞书发一条消息，确认能收到并回复。
+3. **若 icube 命令报错**：运行 `Probe APIs` 重新枚举 `icube.*` 命令名，比对是否改名/改参数。
+
+---
+
+## 十五、保活验证用例
+
+> 用于 v0.1.2 保活机制的验收与 Trae 升级后的回归。
+
+| 用例 | 场景 | 操作步骤 | 预期结果 | 日志关键点 |
+|------|------|----------|----------|-----------|
+| **TC-01 激活自启动** | Trae 启动 / 重载窗口 | `Developer: Reload Window` | 无需手动点命令，桥接自动启动 | `[保活] 扩展已激活，自动启动飞书桥接...` |
+| **TC-02 超时自动重启** | lark-cli 1 小时超时 | 等待到期（或用短 `--timeout` 模拟） | 退出后 3s 内自动重启 | `[保活] lark-cli 已退出...3000ms 后自动重启` |
+| **TC-03 崩溃自动重启** | lark-cli 异常退出 | 任务管理器结束 `lark-cli.exe` | 自动重启，退避延迟递增 | `[保活] ... 第 N 次`，延迟 3s→6s→12s |
+| **TC-04 退避清零** | 连接恢复 | 完成 TC-03 后确认连接成功再触发下一次退出 | 重启计数归零 | `[保活] 连接已恢复，重置重启计数 (原 N 次)` |
+| **TC-05 手动停止不重启** | 用户主动停止 | `Stop Bridge` | 停止后**不**自动重启 | `[保活] 手动停止，不自动重启` |
+| **TC-06 Trae 退出干净关闭** | 正常关闭 Trae | 关闭 Trae 窗口 | 桥接停止，无残留进程 | `扩展已停用` |
+| **TC-07 孤儿进程清理** | Trae 异常退出后重开 | 强杀 Trae → 重新打开 → 触发启动 | 残留 lark-cli 被清理，仅一个连接 | `[孤儿清理] 发现残留 lark-cli 进程 (PID xxx)...` |
+| **TC-08 误杀保护** | PID 被其他进程复用 | 往 `bridge.pid` 写非 lark-cli 的 PID → 启动桥接 | 跳过清理，不误杀 | `[孤儿清理] ... 非 lark-cli，跳过（避免误杀）` |
+| **TC-09 路径自动探测** | Trae 升级后版本目录变化 | 目录改为新版本号（如 `1.0.4`）→ 重载窗口 | 自动选用新版本 | `[lark-cli] 自动探测到路径: ...\lark\1.0.4\...` |
+
+---
+
+## 文档维护说明
+
+本文档记录了飞书桥接扩展的完整实现过程，包括：
 - 探索历史时间线（Phase 1-5）
 - 架构决策与方案对比
 - 核心技术实现细节
-- 代码示例与数据流图
-- 已知限制与未来规划
+- 保活机制与孤儿进程清理（v0.1.2）
+- Trae 升级影响评估
+- 验证用例
 
 **最后更新**：2026-08-05
-**当前版本**：v0.1.1（Session 智能复用 + 全链路日志 + PERF 计时）
-**状态**：端到端链路已打通 ✅
+**当前版本**：v0.1.2（保活自动重启 + 孤儿进程清理 + lark-cli 路径自动探测）
+**状态**：端到端链路已打通 ✅；只要 Trae 打开，飞书持续在线 ✅
 
 **相关文件**：
-- 扩展源码：[extension.js](file:///C:/Users/yuanw/.trae-cn/extensions/feishu-trae-agent-bridge/extension.js)
-- 运行日志：[bridge.log](file:///E:/Trae/feishu-bridge/bridge.log)
-- 启动脚本：[start-trae-cdp.bat](file:///E:/Trae/feishu-bridge/start-trae-cdp.bat)
+- 扩展源码：[extension.js](./extension/extension.js)
+- 构建指南：[feishu-build-guide.md](./docs/feishu-build-guide.md)
+

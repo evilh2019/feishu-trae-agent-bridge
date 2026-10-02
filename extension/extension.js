@@ -26,6 +26,15 @@ function findLarkCli() {
     return CONFIG.LARK_CLI;
   }
   const os = require('os');
+  // 优先扫描「版本号目录」（Trae 升级后目录名会变，如 1.0.3 → 1.0.4），取最新版本
+  const larkBases = [
+    path.join(os.homedir(), '.trae-cn', 'plugins', 'trae-remote-official', 'lark'),
+    path.join(os.homedir(), '.trae-cn', 'plugins', 'lark'),
+  ];
+  for (const base of larkBases) {
+    const found = scanLarkVersionDir(base);
+    if (found) return found;
+  }
   const candidates = [
     process.env.LARK_CLI_PATH,
     path.join(os.homedir(), '.trae-cn', 'plugins', 'trae-remote-official', 'lark', 'bin', 'lark-cli.exe'),
@@ -35,6 +44,28 @@ function findLarkCli() {
   for (const p of candidates) {
     if (fs.existsSync(p)) return p;
   }
+  return null;
+}
+
+// 扫描形如 1.2.3 的版本目录，返回最新版本下的 lark-cli.exe
+function scanLarkVersionDir(base) {
+  try {
+    if (!fs.existsSync(base)) return null;
+    const versions = fs.readdirSync(base)
+      .filter((n) => /^\d+\.\d+\.\d+$/.test(n))
+      .sort((a, b) => {
+        const pa = a.split('.').map(Number);
+        const pb = b.split('.').map(Number);
+        for (let i = 0; i < 3; i++) {
+          if (pa[i] !== pb[i]) return pb[i] - pa[i];
+        }
+        return 0;
+      });
+    for (const v of versions) {
+      const p = path.join(base, v, 'bin', 'lark-cli.exe');
+      if (fs.existsSync(p)) return p;
+    }
+  } catch (e) { /* 忽略 */ }
   return null;
 }
 
@@ -52,6 +83,7 @@ function initPaths() {
     FEISHU_USER_ID: CONFIG.FEISHU_USER_ID,
     REPLIES_DIR: repliesDir,
     SESSION_STATE_FILE: path.join(workDir, 'session_state.json'),
+    BRIDGE_PID_FILE: path.join(workDir, 'bridge.pid'),
     BRIDGE_TIMEOUT: CONFIG.BRIDGE_TIMEOUT,
     LOG_FILE: path.join(workDir, 'bridge.log'),
     WORK_DIR: workDir,
@@ -62,6 +94,11 @@ let PATHS; // 运行时配置，由 activate() 初始化
 
 let bridgeProcess = null;
 let isBridgeRunning = false;
+let bridgeManuallyStopped = false;   // 手动停止标志：为 true 时不自动重启
+let bridgeRestartTimer = null;      // 自动重启定时器
+let bridgeRestartAttempts = 0;      // 连续重启次数（用于指数退避）
+const BRIDGE_RESTART_BASE_DELAY = 3000;   // 自动重启基础延迟（毫秒）
+const BRIDGE_RESTART_MAX_DELAY = 60000;   // 自动重启最大退避延迟（毫秒）
 let processedEventIds = new Set();  // 事件去重
 let messageQueue = [];  // 消息处理队列
 let isProcessing = false;  // 是否正在处理消息
@@ -990,8 +1027,19 @@ async function probeFeishuBridge() {
 
 // ========== 完整飞书桥接链路 ==========
 
-async function startFullBridge() {
-  log('=== 启动完整飞书桥接 ===');
+async function startFullBridge(opts) {
+  const isRestart = !!(opts && opts.isRestart === true);
+  log(isRestart ? '=== [保活] 自动重启完整飞书桥接 ===' : '=== 启动完整飞书桥接 ===');
+
+  // 清除手动停止标志（允许后续保活自动重启）
+  bridgeManuallyStopped = false;
+
+  // 重新探测 lark-cli 路径（兼容 Trae 升级后版本目录变化）
+  const detected = findLarkCli();
+  if (detected) {
+    if (detected !== PATHS.LARK_CLI) log(`[lark-cli] 自动探测到路径: ${detected}`);
+    PATHS.LARK_CLI = detected;
+  }
 
   // 确保 session 状态已从文件恢复（覆盖 activate 之后可能的变更）
   loadSessionState();
@@ -1000,6 +1048,7 @@ async function startFullBridge() {
     log('桥接已在运行，先停止...');
     stopFullBridge();
     await sleep(1000);
+    bridgeManuallyStopped = false;  // stopFullBridge 会置 true，这里重新清除
   }
 
   // 创建 replies 目录
@@ -1008,14 +1057,18 @@ async function startFullBridge() {
     log(`创建 replies 目录: ${PATHS.REPLIES_DIR}`);
   }
 
-  // 清理旧的 sideband 文件
-  try {
-    const oldFiles = fs.readdirSync(PATHS.REPLIES_DIR);
-    for (const f of oldFiles) {
-      fs.unlinkSync(path.join(PATHS.REPLIES_DIR, f));
-    }
-    log(`清理 ${oldFiles.length} 个旧 sideband 文件`);
-  } catch (e) { /* 忽略 */ }
+  // 清理旧的 sideband 文件（仅手动启动时清理；自动重启时保留，避免误删正在处理的回复）
+  if (!isRestart) {
+    try {
+      const oldFiles = fs.readdirSync(PATHS.REPLIES_DIR);
+      for (const f of oldFiles) {
+        fs.unlinkSync(path.join(PATHS.REPLIES_DIR, f));
+      }
+      log(`清理 ${oldFiles.length} 个旧 sideband 文件`);
+    } catch (e) { /* 忽略 */ }
+  } else {
+    log('[保活] 自动重启，跳过 sideband 文件清理');
+  }
 
   // 启动 fs.watch 目录监听（零延迟检测 sideband 文件）
   setupReplyWatcher();
@@ -1028,12 +1081,20 @@ async function startFullBridge() {
     '--timeout', PATHS.BRIDGE_TIMEOUT
   ];
 
+  // 启动前清理上一轮可能残留的孤儿 lark-cli（Trae 异常退出时会残留）
+  await killOrphanLarkCli();
+
   log(`启动 lark-cli: ${PATHS.LARK_CLI} ${args.join(' ')}`);
   bridgeProcess = spawn(PATHS.LARK_CLI, args, {
     stdio: ['pipe', 'pipe', 'pipe'],
     windowsHide: true
   });
   isBridgeRunning = true;
+
+  // 记录当前 PID，供下次启动清理孤儿进程
+  try {
+    fs.writeFileSync(PATHS.BRIDGE_PID_FILE, String(bridgeProcess.pid), 'utf8');
+  } catch (e) { /* 忽略 */ }
 
   log(`lark-cli event consume 已启动 (PID: ${bridgeProcess.pid})`);
   log('等待飞书消息...');
@@ -1069,12 +1130,32 @@ async function startFullBridge() {
   bridgeProcess.stderr.on('data', (data) => {
     const msg = data.toString().trim();
     if (msg) log(`[lark-cli] ${msg}`);
+    // 连接成功 → 重置退避计数
+    if (msg.includes('connected') || msg.includes('ready event_key')) {
+      if (bridgeRestartAttempts > 0) {
+        log(`[保活] 连接已恢复，重置重启计数 (原 ${bridgeRestartAttempts} 次)`);
+        bridgeRestartAttempts = 0;
+      }
+    }
+  });
+
+  bridgeProcess.on('error', (err) => {
+    log(`[保活] lark-cli 进程错误: ${err.message}`);
+    isBridgeRunning = false;
+    bridgeProcess = null;
+    if (!bridgeManuallyStopped) scheduleBridgeRestart(-1, 'spawn-error');
   });
 
   bridgeProcess.on('exit', (code, signal) => {
     log(`lark-cli event consume 已退出 (code: ${code}, signal: ${signal})`);
     isBridgeRunning = false;
     bridgeProcess = null;
+    // 非手动停止 → 自动重启（保活）
+    if (bridgeManuallyStopped) {
+      log('[保活] 手动停止，不自动重启');
+    } else {
+      scheduleBridgeRestart(code, signal);
+    }
   });
 
   // 启动队列处理器
@@ -1085,6 +1166,13 @@ async function startFullBridge() {
 }
 
 function stopFullBridge() {
+  // 标记为手动停止：阻止保活机制自动重启
+  bridgeManuallyStopped = true;
+  if (bridgeRestartTimer) {
+    clearTimeout(bridgeRestartTimer);
+    bridgeRestartTimer = null;
+    log('[保活] 已取消待执行的重启');
+  }
   cleanupReplyWatcher();
   if (bridgeProcess) {
     log('停止 lark-cli event consume...');
@@ -1100,6 +1188,94 @@ function stopFullBridge() {
   }
   messageQueue = [];
   isProcessing = false;
+}
+
+// 保活：安排自动重启（指数退避，最长 BRIDGE_RESTART_MAX_DELAY）
+function scheduleBridgeRestart(code, signal) {
+  if (bridgeManuallyStopped) {
+    log('[保活] 已手动停止，不重启');
+    return;
+  }
+  if (bridgeRestartTimer) {
+    log('[保活] 已有待执行的重启计划，跳过');
+    return;
+  }
+  bridgeRestartAttempts++;
+  const delay = Math.min(
+    BRIDGE_RESTART_BASE_DELAY * Math.pow(2, bridgeRestartAttempts - 1),
+    BRIDGE_RESTART_MAX_DELAY
+  );
+  log(`[保活] lark-cli 已退出 (code=${code}, signal=${signal})，${delay}ms 后自动重启 (第 ${bridgeRestartAttempts} 次)`);
+  bridgeRestartTimer = setTimeout(() => {
+    bridgeRestartTimer = null;
+    if (bridgeManuallyStopped) {
+      log('[保活] 定时器触发时已手动停止，取消重启');
+      return;
+    }
+    if (isBridgeRunning) {
+      log('[保活] 桥接已在运行，取消本次重启');
+      return;
+    }
+    log('[保活] 正在自动重启桥接...');
+    startFullBridge({ isRestart: true }).catch((e) => log(`[保活] 自动重启失败: ${e.message}`));
+  }, delay);
+}
+
+// ========== 孤儿进程清理 ==========
+// Trae 异常退出时子进程 lark-cli 可能残留，导致下次启动出现双连接（消息重复）。
+// 策略：启动前读取上次记录的 PID，先校验其进程名确为 lark-cli.exe 再清理，避免误杀被回收的 PID。
+function execFileAsync(cmd, args) {
+  return new Promise((resolve, reject) => {
+    execFile(cmd, args, (err, stdout) => {
+      if (err) reject(err);
+      else resolve(stdout);
+    });
+  });
+}
+
+// 查询指定 PID 的进程名；进程不存在时返回 null
+function getProcessName(pid) {
+  return new Promise((resolve) => {
+    execFile('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'], (err, stdout) => {
+      if (err || !stdout) return resolve(null);
+      const line = stdout.trim();
+      if (!line || line.startsWith('INFO:')) return resolve(null);
+      const m = line.match(/^"([^"]+)"/);
+      resolve(m ? m[1] : null);
+    });
+  });
+}
+
+async function killOrphanLarkCli() {
+  let oldPid = null;
+  try {
+    if (fs.existsSync(PATHS.BRIDGE_PID_FILE)) {
+      oldPid = parseInt(fs.readFileSync(PATHS.BRIDGE_PID_FILE, 'utf8').trim(), 10);
+    }
+  } catch (e) { /* 忽略 */ }
+
+  if (!oldPid || Number.isNaN(oldPid)) {
+    log('[孤儿清理] 无历史 PID 记录，跳过');
+    return;
+  }
+
+  const name = await getProcessName(oldPid);
+  if (!name) {
+    log(`[孤儿清理] 历史 PID ${oldPid} 已不存在，无需清理`);
+    return;
+  }
+  if (!name.toLowerCase().includes('lark-cli')) {
+    log(`[孤儿清理] 历史 PID ${oldPid} 现为 "${name}"，非 lark-cli，跳过（避免误杀）`);
+    return;
+  }
+
+  log(`[孤儿清理] 发现残留 lark-cli 进程 (PID ${oldPid})，正在清理...`);
+  try {
+    await execFileAsync('taskkill', ['/F', '/PID', String(oldPid)]);
+    log(`[孤儿清理] ✅ 残留进程 PID ${oldPid} 已清理`);
+  } catch (e) {
+    log(`[孤儿清理] 清理失败: ${e.message}`);
+  }
 }
 
 function setupReplyWatcher() {
@@ -1862,7 +2038,7 @@ function activate(context) {
 
   log('========================================');
   log('Feishu Trae Agent Bridge 扩展已激活');
-  log(`版本: 0.1.1 (Session 智能复用 + 全链路日志 + PERF 计时)`);
+  log(`版本: 0.1.2 (Session 持久化 + 保活自动重启 + 孤儿清理)`);
   log(`激活时间: ${new Date().toISOString()}`);
   log(`lark-cli: ${PATHS.LARK_CLI || '(未找到)'}`);
   log(`工作目录: ${PATHS.WORK_DIR}`);
@@ -1885,7 +2061,7 @@ function activate(context) {
   log('');
   log('飞书指令: /新对话 或 /reset 可在飞书中重置会话');
   log('');
-  log('通过 Ctrl+Shift+P 搜索 "XiaoT1" 调用');
+  log('通过 Ctrl+Shift+P 搜索 "Feishu Trae Agent Bridge" 调用');
   log('');
 
   const healthCmd = vscode.commands.registerCommand('xiaot1.bridge.health', healthCheck);
@@ -1901,9 +2077,19 @@ function activate(context) {
   });
 
   context.subscriptions.push(healthCmd, testCmd, testIcubeCmd, probeCmd, probeFeishuCmd, startCmd, stopCmd, resetSessionCmd);
+
+  // 保活：激活时自动启动桥接，保证飞书消息随时可达
+  log('[保活] 扩展已激活，自动启动飞书桥接...');
+  startFullBridge().catch((e) => log(`[保活] 自动启动失败: ${e.message}`));
 }
 
 function deactivate() {
+  // 标记手动停止并清理定时器，避免扩展卸载后残留重启
+  bridgeManuallyStopped = true;
+  if (bridgeRestartTimer) {
+    clearTimeout(bridgeRestartTimer);
+    bridgeRestartTimer = null;
+  }
   if (bridgeProcess) {
     try { bridgeProcess.kill(); } catch (e) { /* 忽略 */ }
     bridgeProcess = null;
