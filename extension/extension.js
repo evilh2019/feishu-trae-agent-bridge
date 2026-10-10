@@ -210,6 +210,9 @@ const DEFAULT_CHAT_KEY = 'default'; // 事件缺 chat_id 时的兜底 key
 let activeChatId = '';              // 当前正在处理的飞书对话 id（队列串行处理，供回复路由使用）
 const pendingNewChats = new Set();  // 收到 /new 或超时重置后，该对话下一条消息强制新建 session
 const SESSION_RESET_TIMEOUT = 12 * 60 * 60 * 1000;  // 12 小时无消息自动重置（放宽阈值，避免因消息间隔而频繁丢上下文）
+const MAX_RETRIES = 10;              // Agent 无回复（如模型 503 空回复）时，最多自动重发 10 次
+const FIRST_WAIT_MS = 600000;        // 首轮等待窗口（容纳长任务）
+const RETRY_WAIT_MS = 45000;         // 重试轮次等待窗口（失败后快速重发）
 const SESSION_RESET_COMMANDS = ['/新对话', '/reset', '/new', '/重置对话'];
 
 function log(msg) {
@@ -1750,7 +1753,7 @@ async function trySendToAgent(message, sidebandFile, chatKey, rawContent) {
   return { sendResult };
 }
 
-async function handleFeishuEvent(event) {
+async function handleFeishuEvent(event, attempt = 1) {
   const content = event.content || '';
   const messageId = event.message_id || '';
   const senderId = event.sender_id || '';
@@ -1883,8 +1886,8 @@ async function handleFeishuEvent(event) {
   timingMap.set(messageId, { ...timingMap.get(messageId), t4 });
   const perfT0 = t0;
   log(`[handleFeishuEvent] [PERF] T4 开始等待Agent回复: ${t4}ms, 距T0=${t4 - perfT0}ms, messageId=${messageId?.substring(0, 16)}...`);
-  log(`[handleFeishuEvent] 开始等待 Agent 回复 (sideband=${sidebandFile}, 最大等待=600s, messageId=${messageId?.substring(0, 16)}...)`);
-  const maxWait = 600000;
+  const maxWait = attempt === 1 ? FIRST_WAIT_MS : RETRY_WAIT_MS;
+  log(`[handleFeishuEvent] 开始等待 Agent 回复 (sideband=${sidebandFile}, 第 ${attempt} 轮, 最大等待=${Math.floor(maxWait / 1000)}s, messageId=${messageId?.substring(0, 16)}...)`);
   const startTime = Date.now();
   let status = null;
   let lastStatus = null;
@@ -2049,6 +2052,17 @@ async function handleFeishuEvent(event) {
   // 超时处理：先检查 sideband 文件是否已就绪，防止消息丢失
   log(`[handleFeishuEvent] [TIMEOUT] ${Math.floor((Date.now() - startTime) / 1000)}秒等待超时, 共轮询${pollCount}次, watch命中${watchHitCount}次, 检查 sideband 文件 (messageId=${messageId?.substring(0, 16)}...)`);
 
+  // 无回复：若还有重试额度，自动重发消息继续等待（应对模型 503 等导致的空回复）
+  if (attempt <= MAX_RETRIES) {
+    log(`[handleFeishuEvent] [RETRY ${attempt}/${MAX_RETRIES}] ❌ 第 ${attempt} 轮无回复，自动重发（下一轮等待 ${Math.floor(RETRY_WAIT_MS / 1000)}s）...`);
+    if (attempt === 1) {
+      try { await sendFeishuReply(`（Agent 未响应，正在自动重试，最多 ${MAX_RETRIES} 次…）`); } catch (e) { /* 忽略 */ }
+    }
+    timingMap.delete(messageId);
+    return handleFeishuEvent(event, attempt + 1);
+  }
+
+  // 重试次数用尽，进入宽限期兜底
   // 给 Agent 额外 30 秒宽限期（Agent 可能刚好写完）
   for (let i = 0; i < 6; i++) {
     await sleep(5000);
@@ -2112,7 +2126,7 @@ async function handleFeishuEvent(event) {
     }
   }
 
-  // 文件不存在，发送超时通知
+  // 重试次数用尽，发送超时通知
   const tTimeout = Date.now();
   const p = timingMap.get(messageId) || {};
   log(`[handleFeishuEvent] [TIMEOUT] ❌ sideband 文件始终未出现, 发送超时通知到飞书 (messageId=${messageId?.substring(0, 16)}...)`);
@@ -2184,7 +2198,7 @@ function activate(context) {
 
   log('========================================');
   log('Feishu Trae Agent Bridge 扩展已激活');
-  log(`版本: 0.1.7 (会话复用修复：确认落点 + 失败回退当前面板；超时阈值 12 小时)`);
+  log(`版本: 0.1.8 (会话复用修复：确认落点 + 失败回退当前面板；无回复自动重试最多 10 次)`);
   log(`激活时间: ${new Date().toISOString()}`);
   log(`lark-cli: ${PATHS.LARK_CLI || '(未找到)'}`);
   log(`工作目录: ${PATHS.WORK_DIR}`);
