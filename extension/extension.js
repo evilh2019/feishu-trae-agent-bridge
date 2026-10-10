@@ -106,10 +106,110 @@ let replyWatcher = null;  // fs.watch 目录监听器
 let watchDetectedFiles = new Set();  // fs.watch 检测到的待处理文件
 let timingMap = new Map();  // 消息各阶段时间戳 { messageId: { t0, t1, t2, ... } }
 
-// ========== 飞书持久 Session 管理 ==========
-let feishuSessionId = null;        // 飞书桥专用 session ID
+// ========== 通用扩展点：入站拦截器（供独立「增强扩展」注册；本扩展不含任何具体增强逻辑）==========
+// 增强扩展侧用法：
+//   const api = vscode.extensions.getExtension('<基座扩展 id>').exports;
+//   api.registerInboundInterceptor(async (content) => '要前插到消息前的文本，或返回空串');
+// 拦截器在每条入站消息进入 Trae Agent 会话前被 await 调用，返回值前插到 agentMessage；异常一律捕获（fail-safe）。
+const inboundInterceptors = [];
+function registerInboundInterceptor(fn) {
+  if (typeof fn !== 'function') throw new TypeError('registerInboundInterceptor: fn 必须是函数');
+  inboundInterceptors.push(fn);
+  return { dispose() { const i = inboundInterceptors.indexOf(fn); if (i >= 0) inboundInterceptors.splice(i, 1); } };
+}
+
+// ========== 网关：适配器注册表 + 出站钩子（通用；本块不含任何具体传输逻辑）==========
+// 设计见 docs/gateway-architecture.md §四：
+//   传输 adapter  = { id, configure?(cfg), start?(ctx), stop?() }  —— 每个外部系统一个，自己管连接/收发
+//   出站钩子 hook = (reply, ctx) -> Promise<string>               —— 只改"回复文本"，不碰传输
+// 每个 adapter 的 start/stop 独立 try/catch（错误隔离）：一个 adapter 崩溃不影响其它 adapter 与主链路。
+const adapterRegistry = new Map();   // id -> { adapter, running, startedAt }
+const outboundHooks = [];
+
+function registerAdapter(adapter) {
+  if (!adapter || typeof adapter !== 'object') throw new TypeError('registerAdapter: adapter 必须是对象');
+  if (!adapter.id || typeof adapter.id !== 'string') throw new TypeError('registerAdapter: adapter.id 必填');
+  if (adapterRegistry.has(adapter.id)) {
+    log(`[gateway] 适配器已存在，忽略重复注册: ${adapter.id}`);
+    return adapterRegistry.get(adapter.id).adapter;
+  }
+  adapterRegistry.set(adapter.id, { adapter, running: false, startedAt: null });
+  log(`[gateway] 已注册适配器: ${adapter.id}`);
+  return adapter;
+}
+
+function listAdapters() {
+  return Array.from(adapterRegistry.values()).map((e) => ({ id: e.adapter.id, running: e.running, startedAt: e.startedAt }));
+}
+
+async function startAdapter(id) {
+  const entry = adapterRegistry.get(id);
+  if (!entry) { log(`[gateway] startAdapter: 未知适配器 ${id}`); return false; }
+  if (entry.running) { log(`[gateway] 适配器已在运行: ${id}`); return true; }
+  try {
+    if (typeof entry.adapter.configure === 'function') entry.adapter.configure({ logger: log });
+    if (typeof entry.adapter.start === 'function') await entry.adapter.start({ logger: log });
+    entry.running = true;
+    entry.startedAt = Date.now();
+    log(`[gateway] ✅ 适配器已启动: ${id}`);
+    return true;
+  } catch (err) {
+    // 错误隔离：单个 adapter 启动失败只记日志、不抛出，不影响调用方与其它 adapter
+    entry.running = false;
+    log(`[gateway] ❌ 适配器启动失败（已隔离）: ${id}, error=${err && err.message ? err.message.substring(0, 120) : err}`);
+    return false;
+  }
+}
+
+async function stopAdapter(id) {
+  const entry = adapterRegistry.get(id);
+  if (!entry) { log(`[gateway] stopAdapter: 未知适配器 ${id}`); return false; }
+  try {
+    if (typeof entry.adapter.stop === 'function') await entry.adapter.stop();
+    log(`[gateway] 适配器已停止: ${id}`);
+  } catch (err) {
+    log(`[gateway] ⚠️ 适配器停止异常（已隔离）: ${id}, error=${err && err.message ? err.message.substring(0, 120) : err}`);
+  }
+  entry.running = false;
+  return true;
+}
+
+// 逐个启动/停止；各自 try/catch，互为隔离
+async function startAllAdapters() {
+  for (const id of adapterRegistry.keys()) await startAdapter(id);
+}
+async function stopAllAdapters() {
+  for (const id of adapterRegistry.keys()) await stopAdapter(id);
+}
+
+function registerOutboundHook(fn) {
+  if (typeof fn !== 'function') throw new TypeError('registerOutboundHook: fn 必须是函数');
+  outboundHooks.push(fn);
+  return { dispose() { const i = outboundHooks.indexOf(fn); if (i >= 0) outboundHooks.splice(i, 1); } };
+}
+
+// 依次 await 各出站钩子加工回复文本；best-effort，任何异常只记日志并保留上一步文本
+async function applyOutboundHooks(reply, ctx) {
+  let out = reply;
+  for (const fn of outboundHooks) {
+    try {
+      const r = await fn(out, ctx);
+      if (typeof r === 'string') out = r;
+    } catch (e) {
+      log(`[gateway] 出站钩子异常（已忽略）: ${e && e.message ? e.message.substring(0, 120) : e}`);
+    }
+  }
+  return out;
+}
+
+// ========== 飞书持久 Session 管理（按对话 chat_id 隔离，每个飞书对话固定一个 Trae 会话） ==========
+let feishuSessionId = null;        // 当前处理对话的 session ID（处理前由 chatSessions 载入）
 let feishuSessionLastUsed = 0;      // session 最后使用时间戳
-const SESSION_RESET_TIMEOUT = 30 * 60 * 1000;  // 30 分钟无消息自动重置
+const chatSessions = new Map();     // chat_id -> { sessionId, lastUsed }
+const DEFAULT_CHAT_KEY = 'default'; // 事件缺 chat_id 时的兜底 key
+let activeChatId = '';              // 当前正在处理的飞书对话 id（队列串行处理，供回复路由使用）
+const pendingNewChats = new Set();  // 收到 /new 或超时重置后，该对话下一条消息强制新建 session
+const SESSION_RESET_TIMEOUT = 12 * 60 * 60 * 1000;  // 12 小时无消息自动重置（放宽阈值，避免因消息间隔而频繁丢上下文）
 const SESSION_RESET_COMMANDS = ['/新对话', '/reset', '/new', '/重置对话'];
 
 function log(msg) {
@@ -1190,6 +1290,14 @@ function stopFullBridge() {
   isProcessing = false;
 }
 
+// 内置适配器：飞书。传输逻辑仍在本扩展原位（startFullBridge/stopFullBridge），此处仅包一层描述符注册进网关。
+const feishuAdapter = {
+  id: 'feishu',
+  configure() { /* 预留：适配器级配置 */ },
+  start() { return startFullBridge(); },
+  stop() { return stopFullBridge(); }
+};
+
 // 保活：安排自动重启（指数退避，最长 BRIDGE_RESTART_MAX_DELAY）
 function scheduleBridgeRestart(code, signal) {
   if (bridgeManuallyStopped) {
@@ -1407,41 +1515,25 @@ function loadSessionState() {
     const data = JSON.parse(rawContent);
     log(`[Session] [load] JSON 解析成功, 顶层键: ${Object.keys(data).join(', ')}`);
 
-    if (!data || !data.feishuSessionId) {
-      log(`[Session] [load] ⚠️ 无效数据: feishuSessionId 缺失 (data=${JSON.stringify(data).substring(0, 100)})`);
+    // 兼容：旧版单会话格式（顶层 feishuSessionId）无法判断归属哪个对话，忽略并空状态启动
+    if (!data || !data.chats || typeof data.chats !== 'object') {
+      log(`[Session] [load] ⚠️ 无 chats 映射（旧格式或空文件），按空状态启动`);
       return false;
     }
 
-    const savedId = data.feishuSessionId;
-    const savedLastUsed = data.feishuSessionLastUsed || 0;
-    const savedAt = data.savedAt || 0;
-
-    log(`[Session] [load] 解析结果: sessionId=${savedId.substring(0, 12)}..., lastUsed=${savedLastUsed} (${savedLastUsed ? new Date(savedLastUsed).toISOString() : '无'}), savedAt=${savedAt ? new Date(savedAt).toISOString() : '无'}`);
-
-    feishuSessionId = savedId;
-    feishuSessionLastUsed = savedLastUsed;
-    log(`[Session] [load] ✅ 内存变量已更新: feishuSessionId=${feishuSessionId.substring(0, 12)}..., feishuSessionLastUsed=${feishuSessionLastUsed}`);
-
-    // 检查是否超时
-    if (feishuSessionLastUsed) {
-      const elapsed = Date.now() - feishuSessionLastUsed;
-      const timeoutMin = SESSION_RESET_TIMEOUT / 60000;
-      log(`[Session] [load] 超时检查: 已过 ${Math.round(elapsed / 60000)} 分钟, 阈值 ${timeoutMin} 分钟`);
-
-      if (elapsed > SESSION_RESET_TIMEOUT) {
-        log(`[Session] [load] ⚠️ session 已超时 (${Math.round(elapsed / 60000)} 分钟 > ${timeoutMin} 分钟), 自动清除`);
-        feishuSessionId = null;
-        feishuSessionLastUsed = 0;
-        clearSessionState();
-        return false;
-      } else {
-        log(`[Session] [load] ✅ session 未超时，恢复成功`);
+    const now = Date.now();
+    let restored = 0;
+    for (const [chatKey, entry] of Object.entries(data.chats)) {
+      if (!entry || !entry.sessionId) continue;
+      if (entry.lastUsed && now - entry.lastUsed > SESSION_RESET_TIMEOUT) {
+        log(`[Session] [load] 对话 ${chatKey.substring(0, 12)}... 的 session 已超时，丢弃`);
+        continue;
       }
-    } else {
-      log(`[Session] [load] ⚠️ lastUsed 为 0，无法判断超时，视为有效 session`);
+      chatSessions.set(chatKey, { sessionId: entry.sessionId, lastUsed: entry.lastUsed || 0 });
+      restored++;
     }
-
-    return true;
+    log(`[Session] [load] ✅ 恢复 ${restored} 个对话的 session 映射`);
+    return restored > 0;
   } catch (e) {
     log(`[Session] [load] ❌ 加载失败: ${e.message}`);
     log(`[Session] [load] 错误堆栈: ${e.stack?.substring(0, 300) || '无'}`);
@@ -1450,20 +1542,19 @@ function loadSessionState() {
 }
 
 function saveSessionState() {
-  log(`[Session] [save] 开始持久化 session 状态`);
-  log(`[Session] [save] 内存状态: feishuSessionId=${feishuSessionId ? feishuSessionId.substring(0, 12) + '...' : 'null'}, feishuSessionLastUsed=${feishuSessionLastUsed} (${feishuSessionLastUsed ? new Date(feishuSessionLastUsed).toISOString() : '无'})`);
+  log(`[Session] [save] 开始持久化 session 状态 (${chatSessions.size} 个对话)`);
 
   try {
-    if (!feishuSessionId) {
-      log(`[Session] [save] ⚠️ feishuSessionId 为 null，跳过保存`);
+    if (chatSessions.size === 0) {
+      log(`[Session] [save] ⚠️ 无对话 session，跳过保存`);
       return;
     }
 
-    const data = {
-      feishuSessionId: feishuSessionId,
-      feishuSessionLastUsed: feishuSessionLastUsed,
-      savedAt: Date.now()
-    };
+    const chats = {};
+    for (const [chatKey, entry] of chatSessions) {
+      if (entry && entry.sessionId) chats[chatKey] = { sessionId: entry.sessionId, lastUsed: entry.lastUsed || 0 };
+    }
+    const data = { version: 2, chats, savedAt: Date.now() };
 
     const jsonStr = JSON.stringify(data, null, 2);
     log(`[Session] [save] 准备写入 JSON (${jsonStr.length} 字符): ${jsonStr.substring(0, 200)}`);
@@ -1488,6 +1579,7 @@ function saveSessionState() {
 
 function clearSessionState() {
   log(`[Session] [clear] 开始清除 session_state.json`);
+  chatSessions.clear();
   try {
     if (fs.existsSync(PATHS.SESSION_STATE_FILE)) {
       fs.unlinkSync(PATHS.SESSION_STATE_FILE);
@@ -1502,139 +1594,119 @@ function clearSessionState() {
 
 // ========== 飞书 Session 管理函数 ==========
 
-function resetFeishuSession(reason) {
-  const oldId = feishuSessionId;
-  feishuSessionId = null;
-  feishuSessionLastUsed = 0;
-  clearSessionState();
-  log(`[Session] 重置飞书 session (原因: ${reason || '未说明'})${oldId ? ', 旧 session: ' + oldId.substring(0, 12) + '...' : ''}`);
+// chatKey 缺省时重置全部对话（命令面板手动重置）；否则只重置指定对话
+function resetFeishuSession(reason, chatKey) {
+  if (chatKey) {
+    const oldId = chatSessions.get(chatKey)?.sessionId || null;
+    chatSessions.delete(chatKey);
+    saveSessionState();
+    log(`[Session] 重置对话 ${chatKey.substring(0, 12)} 的 session (原因: ${reason || '未说明'})${oldId ? ', 旧 session: ' + oldId.substring(0, 12) + '...' : ''}`);
+  } else {
+    clearSessionState();
+    log(`[Session] 重置全部对话 session (原因: ${reason || '未说明'})`);
+  }
 }
 
-async function trySendToAgent(message, sidebandFile) {
-  // 1. 检查是否为 session 重置指令
-  const strippedMsg = message.trim();
+async function trySendToAgent(message, sidebandFile, chatKey, rawContent) {
+  const key = chatKey || DEFAULT_CHAT_KEY;
+  // 1. 检查是否为 session 重置指令（比对用户原始输入，而非包装后的 agent 消息）
+  const strippedMsg = (rawContent || '').trim();
   if (SESSION_RESET_COMMANDS.some(cmd => strippedMsg === cmd)) {
-    resetFeishuSession('用户指令');
+    resetFeishuSession('用户指令', chatKey);
+    pendingNewChats.add(key);  // 下一条消息强制新建，避免被“复用当前面板会话”策略抢回旧话题
     return { resetCommand: true, replyText: '已重置对话，新消息将创建新 session' };
   }
 
-  // 2. 检查 session 超时
+  // 2. 检查 session 超时（阈值已放宽到 12 小时，正常使用不会因间隔而丢上下文）
   if (feishuSessionId && Date.now() - feishuSessionLastUsed > SESSION_RESET_TIMEOUT) {
-    resetFeishuSession('超时 (30分钟无消息)');
+    resetFeishuSession(`超时 (${SESSION_RESET_TIMEOUT / 3600000}小时无消息)`, chatKey);
+    pendingNewChats.add(key);  // 超时后同样强制新建
   }
 
-  // 3. 尝试复用已有 session（多种策略）
+  // 强制新建标记：仅 /new、重置或超时后的首条消息为 true
+  const forceNew = pendingNewChats.has(key);
+
+  // 3. 复用已有 session —— 只要存在存档 session 就绝不新建；全程单次发送，杜绝重复投递
   let sendResult = null;
-  
-  // 策略 A: 直接传递 sessionId 参数
-  if (feishuSessionId) {
-    log(`[Session] 尝试复用 session: ${feishuSessionId.substring(0, 12)}...`);
-    const sessionAttempts = [
-      { sessionId: feishuSessionId },
-      { session_id: feishuSessionId },
-      { targetSessionId: feishuSessionId },
-    ];
-    for (const opts of sessionAttempts) {
+  let currentSession = null;
+  try {
+    currentSession = (await vscode.commands.executeCommand('icube.chat.getCurrentSessionId')) || null;
+  } catch (e) {
+    log(`[Session] 读取当前会话失败: ${e.message?.substring(0, 50)}`);
+  }
+  if (forceNew) {
+    log('[Session] 已标记强制新建（/new 或重置）');
+  } else {
+    log(`[Session] 当前面板会话: ${currentSession ? currentSession.substring(0, 12) + '...' : '(无)'}；已存 session: ${feishuSessionId ? feishuSessionId.substring(0, 12) + '...' : '(无)'}`);
+  }
+
+  // A. 有存档且未强制新建 → 复用（优先发到活跃会话；否则单次定向发送）
+  if (feishuSessionId && !forceNew) {
+    if (currentSession === feishuSessionId) {
+      log('[Session] ✅ 当前面板即目标会话，直接发送（复用）');
+      sendResult = await vscode.commands.executeCommand(
+        'icube.chat.sendToAgentNonBlocking',
+        [message],
+        { enableUnstableFields: true }
+      );
+    } else {
+      log(`[Session] 当前面板非目标会话，单次定向发送到存档 session: ${feishuSessionId.substring(0, 12)}...`);
       try {
         const r = await vscode.commands.executeCommand(
           'icube.chat.sendToAgentNonBlocking',
           [message],
-          { enableUnstableFields: true, ...opts }
+          { enableUnstableFields: true, sessionId: feishuSessionId }
         );
-        log(`[Session] 尝试 ${Object.keys(opts)[0]} 参数, 返回 sessionId: ${r?.sessionId?.substring(0, 12) || '无'}`);
-        if (r && r.sessionId) {
-          sendResult = r;
-          // 检查是否复用成功（返回的 sessionId 与传入的相同）
-          if (r.sessionId === feishuSessionId) {
-            log(`[Session] ✅ 复用成功`);
-            break;  // 复用成功，不再尝试其他格式
-          } else {
-            log(`[Session] ⚠️ 返回了新 session (${r.sessionId?.substring(0, 12)}...), 尝试下一种格式`);
-            // 继续尝试其他格式
-            sendResult = null;
-          }
-        }
+        sendResult = r || {};
+        log(`[Session] 定向发送返回 sessionId: ${r?.sessionId?.substring(0, 12) || '无'}`);
       } catch (e) {
-        log(`[Session] 参数 ${Object.keys(opts)[0]} 失败: ${e.message?.substring(0, 50)}`);
+        log(`[Session] 定向发送失败: ${e.message?.substring(0, 60)}`);
+        sendResult = null;
       }
     }
   }
 
-  // 策略 B: 如果策略 A 失败，尝试获取当前 chat 面板会话
+  // B. 无存档（首次/强制新建）或复用发送失败 → 单次新建
   if (!sendResult) {
-    try {
-      const currentSession = await vscode.commands.executeCommand('icube.chat.getCurrentSessionId');
-      log(`[Session] 当前 chat session: ${currentSession || '(无)'}`);
+    const why = forceNew ? '强制新建 session' : (feishuSessionId ? '复用发送失败，创建新 session' : '首次消息，创建新 session');
+    log(`[Session] ${why}`);
+    sendResult = await vscode.commands.executeCommand(
+      'icube.chat.sendToAgentNonBlocking',
+      [message],
+      { enableUnstableFields: true, newSession: true }
+    );
+    log(`[Session] 新 session 创建成功: ${sendResult?.sessionId?.substring(0, 12) || '无'}`);
+  }
 
-      // 策略 D: feishuSessionId 为 null 时，复用当前 chat 面板会话
-      if (!feishuSessionId && currentSession) {
-        log(`[Session] 无保存 session，尝试复用当前 chat 会话: ${currentSession.substring(0, 12)}...`);
-        const reuseAttempts = [
-          { sessionId: currentSession },
-          { session_id: currentSession },
-          { targetSessionId: currentSession },
-        ];
-        for (const opts of reuseAttempts) {
-          try {
-            const r = await vscode.commands.executeCommand(
-              'icube.chat.sendToAgentNonBlocking',
-              [message],
-              { enableUnstableFields: true, ...opts }
-            );
-            log(`[Session] 尝试 ${Object.keys(opts)[0]} 参数, 返回 sessionId: ${r?.sessionId?.substring(0, 12) || '无'}`);
-            if (r && r.sessionId === currentSession) {
-              log(`[Session] ✅ 复用当前 chat 会话成功`);
-              sendResult = r;
-              break;
-            } else if (r && r.sessionId) {
-              log(`[Session] ⚠️ 返回了新 session (${r.sessionId?.substring(0, 12)}...), 尝试下一种格式`);
-              sendResult = null;
-            }
-          } catch (e) {
-            log(`[Session] 参数 ${Object.keys(opts)[0]} 失败: ${e.message?.substring(0, 50)}`);
-          }
+  // C. 确认本条消息实际落入的 session，写回该对话专属映射
+  //    Trae 有时不返回 sessionId：回读当前面板会话兜底，避免映射停在旧 id 上
+  let finalSessionId = sendResult?.sessionId || null;
+  if (!finalSessionId) {
+    try {
+      const cur = (await vscode.commands.executeCommand('icube.chat.getCurrentSessionId')) || null;
+      if (cur) {
+        finalSessionId = cur;
+        if (feishuSessionId && cur !== feishuSessionId) {
+          log(`[Session] ⚠️ 实际落点与存档不一致，改以当前会话为准: ${cur.substring(0, 12)}...`);
+        } else {
+          log(`[Session] 返回无 sessionId，回读当前会话: ${cur.substring(0, 12)}...`);
         }
-      } else if (currentSession && currentSession === feishuSessionId) {
-        // 当前 session 与保存的相同，直接发送
-        log(`[Session] 当前 session 匹配，直接发送到活跃会话`);
-        sendResult = await vscode.commands.executeCommand(
-          'icube.chat.sendToAgentNonBlocking',
-          [message],
-          { enableUnstableFields: true }
-        );
-        log(`[Session] 发送完成, sessionId: ${sendResult?.sessionId?.substring(0, 12) || '无'}`);
+      } else if (feishuSessionId) {
+        finalSessionId = feishuSessionId;
       }
     } catch (e) {
-      log(`[Session] 获取当前 session 失败: ${e.message?.substring(0, 50)}`);
+      log(`[Session] 回读当前会话失败: ${e.message?.substring(0, 50)}`);
+      if (feishuSessionId) finalSessionId = feishuSessionId;
     }
   }
-
-  // 4. 所有复用策略都失败 → 创建新 session
-  if (!sendResult) {
-    if (feishuSessionId) {
-      log('[Session] ❌ 所有复用策略都失败，创建新 session');
-    } else {
-      log('[Session] 首次消息，创建新 session');
+  if (finalSessionId) {
+    if (finalSessionId !== feishuSessionId) {
+      log(`[Session] 保存对话 ${key.substring(0, 12)} 的 session: ${finalSessionId.substring(0, 12)}...`);
     }
-    try {
-      sendResult = await vscode.commands.executeCommand(
-        'icube.chat.sendToAgentNonBlocking',
-        [message],
-        { enableUnstableFields: true, newSession: true }
-      );
-      log(`[Session] 新 session 创建成功: ${sendResult?.sessionId?.substring(0, 12) || '无'}`);
-    } catch (e) {
-      throw e;
-    }
-  }
-
-  // 5. 更新 session 状态
-  if (sendResult?.sessionId) {
-    if (sendResult.sessionId !== feishuSessionId) {
-      log(`[Session] 保存 session: ${sendResult.sessionId.substring(0, 12)}...`);
-    }
-    feishuSessionId = sendResult.sessionId;
+    feishuSessionId = finalSessionId;
     feishuSessionLastUsed = Date.now();
+    chatSessions.set(key, { sessionId: finalSessionId, lastUsed: feishuSessionLastUsed });
+    pendingNewChats.delete(key);  // 已成功发送，清除强制新建标记
     saveSessionState();
   }
 
@@ -1646,7 +1718,16 @@ async function handleFeishuEvent(event) {
   const messageId = event.message_id || '';
   const senderId = event.sender_id || '';
   const chatType = event.chat_type || 'p2p';
+  const chatId = event.chat_id || '';
   const eventId = event.event_id || '';
+  // 按对话隔离：每个飞书对话（chat_id）固定映射到一个 Trae 会话
+  const chatKey = chatId || DEFAULT_CHAT_KEY;
+
+  // 载入该对话专属的 session（互不干扰），并记录当前对话 id 供回复路由
+  const saved = chatSessions.get(chatKey);
+  feishuSessionId = saved?.sessionId || null;
+  feishuSessionLastUsed = saved?.lastUsed || 0;
+  activeChatId = chatId;
 
   const t1 = Date.now();
   if (timingMap.has(messageId)) {
@@ -1654,7 +1735,7 @@ async function handleFeishuEvent(event) {
     timingMap.set(messageId, { ...existing, t1 });
   }
   log(`[handleFeishuEvent] [PERF] T1 开始处理: ${t1}ms, 距T0=${t1 - (timingMap.get(messageId)?.t0 || t1)}ms, messageId=${messageId?.substring(0, 16)}...`);
-  log(`[handleFeishuEvent] 开始处理: messageId=${messageId?.substring(0, 16)}..., chatType=${chatType}, messageType=${event.message_type || 'text'}, content="${content?.substring(0, 50)}"`);
+  log(`[handleFeishuEvent] 开始处理: messageId=${messageId?.substring(0, 16)}..., chatType=${chatType}, chat=${chatKey?.substring(0, 12)}..., messageType=${event.message_type || 'text'}, content="${content?.substring(0, 50)}"`);
 
   // 只处理文本消息
   if (event.message_type && event.message_type !== 'text') {
@@ -1686,7 +1767,21 @@ async function handleFeishuEvent(event) {
   }
 
   // 1. 发送消息到 Trae Agent（附 sideband 指令 + 持久 session 复用）
-  const agentMessage = `[飞书消息] 用户说：${content}\n\n[系统指令] 请将回复内容写入文件：${sidebandFile}`;
+  // 通用扩展点：依次 await 各入站拦截器（增强扩展注册，如经验库召回）；best-effort，失败不阻塞
+  let injectPrefix = '';
+  if (inboundInterceptors.length > 0) {
+    const tHook = Date.now();
+    for (const fn of inboundInterceptors) {
+      try {
+        const seg = await fn(content);
+        if (seg) injectPrefix += seg + '\n\n';
+      } catch (e) {
+        log(`[handleFeishuEvent] 入站拦截器异常（已忽略）: ${e.message?.substring(0, 120)}`);
+      }
+    }
+    log(`[handleFeishuEvent] 入站拦截器: ${inboundInterceptors.length} 个, 前插 ${injectPrefix.length} 字符 (${Date.now() - tHook}ms)`);
+  }
+  const agentMessage = `${injectPrefix}[飞书消息] 用户说：${content}\n\n[系统指令] 请将回复内容写入文件：${sidebandFile}`;
   log(`[handleFeishuEvent] 准备发送到 Agent: messageId=${messageId?.substring(0, 16)}..., 当前 feishuSessionId=${feishuSessionId ? feishuSessionId.substring(0, 12) + '...' : 'null'}`);
 
   let sendResult = null;
@@ -1695,7 +1790,7 @@ async function handleFeishuEvent(event) {
   timingMap.set(messageId, { ...timingMap.get(messageId), t0, t2 });
   try {
     log(`[handleFeishuEvent] [PERF] T2 开始发送Agent: ${t2}ms, 距T0=${t2 - t0}ms, messageId=${messageId?.substring(0, 16)}...`);
-    const result = await trySendToAgent(agentMessage, sidebandFile);
+    const result = await trySendToAgent(agentMessage, sidebandFile, chatKey, content);
     const t3 = Date.now();
     timingMap.set(messageId, { ...timingMap.get(messageId), t3 });
     log(`[handleFeishuEvent] [PERF] T3 Agent发送完成: ${t3}ms, 发送耗时=${t3 - t2}ms, 距T0=${t3 - t0}ms`);
@@ -1717,8 +1812,8 @@ async function handleFeishuEvent(event) {
 
     // 如果 session 复用失败，尝试重置 session 后重试
     if (feishuSessionId) {
-      log(`[handleFeishuEvent] 检测到有保存的 session (${feishuSessionId?.substring(0, 12)}...), 重置后重试...`);
-      resetFeishuSession('复用失败');
+      log(`[handleFeishuEvent] 检测到对话 ${chatKey?.substring(0, 12)}... 有保存的 session (${feishuSessionId?.substring(0, 12)}...), 重置后重试...`);
+      resetFeishuSession('复用失败', chatKey);
       try {
         const retryResult = await vscode.commands.executeCommand(
           'icube.chat.sendToAgentNonBlocking',
@@ -1727,6 +1822,7 @@ async function handleFeishuEvent(event) {
         );
         feishuSessionId = retryResult?.sessionId || null;
         feishuSessionLastUsed = Date.now();
+        if (feishuSessionId) chatSessions.set(chatKey, { sessionId: feishuSessionId, lastUsed: feishuSessionLastUsed });
         saveSessionState();
         log(`[handleFeishuEvent] ✅ 重试成功, 新 sessionId: ${retryResult?.sessionId?.substring(0, 12) || '(无)'}, messageId=${messageId?.substring(0, 16)}...`);
         sendResult = retryResult;
@@ -1997,19 +2093,32 @@ async function handleFeishuEvent(event) {
   await sendFeishuReply('（Agent 回复读取超时，请重新发送消息）');
 }
 
-function sendFeishuReply(replyText) {
-  const textLength = replyText?.length || 0;
-  log(`[sendFeishuReply] 准备发送回复: ${textLength} 字符, 前50字符: "${replyText?.substring(0, 50)}"`);
+async function sendFeishuReply(replyText) {
+  // 网关出站边界：依次应用出站钩子（增强扩展可加工回复文本）；无钩子时零开销
+  let outText = replyText;
+  if (outboundHooks.length > 0) {
+    const tHook = Date.now();
+    outText = await applyOutboundHooks(replyText, { adapterId: 'feishu', peer: PATHS.FEISHU_USER_ID });
+    log(`[sendFeishuReply] 出站钩子: ${outboundHooks.length} 个, ${replyText?.length || 0} → ${outText?.length || 0} 字符 (${Date.now() - tHook}ms)`);
+  }
+  const textLength = outText?.length || 0;
+  log(`[sendFeishuReply] 准备发送回复: ${textLength} 字符, 前50字符: "${outText?.substring(0, 50)}"`);
   return new Promise((resolve) => {
     // 使用 --content 参数（JSON 格式），安全处理特殊字符
-    const contentJson = JSON.stringify({ text: replyText });
+    const contentJson = JSON.stringify({ text: outText });
+    // 路由：优先回复到消息来源对话（chat_id，群/单聊均可），无则回退到配置的单聊用户
     const args = [
       '--profile', PATHS.LARK_PROFILE,
       'im', '+messages-send',
-      '--as', 'bot',
-      '--user-id', PATHS.FEISHU_USER_ID,
-      '--content', contentJson
+      '--as', 'bot'
     ];
+    if (activeChatId) {
+      args.push('--chat-id', activeChatId);
+    } else {
+      args.push('--user-id', PATHS.FEISHU_USER_ID);
+    }
+    args.push('--content', contentJson);
+    log(`[sendFeishuReply] 路由目标: ${activeChatId ? 'chat_id=' + activeChatId.substring(0, 12) + '...' : 'user_id=' + (PATHS.FEISHU_USER_ID || '').substring(0, 10) + '...'}`);
 
     execFile(PATHS.LARK_CLI, args, { maxBuffer: 1024 * 1024, windowsHide: true }, (error, stdout, stderr) => {
       if (error) {
@@ -2038,7 +2147,7 @@ function activate(context) {
 
   log('========================================');
   log('Feishu Trae Agent Bridge 扩展已激活');
-  log(`版本: 0.1.2 (Session 持久化 + 保活自动重启 + 孤儿清理)`);
+  log(`版本: 0.1.6 (会话复用修复：单次发送 + 存档优先复用；超时阈值放宽至 12 小时)`);
   log(`激活时间: ${new Date().toISOString()}`);
   log(`lark-cli: ${PATHS.LARK_CLI || '(未找到)'}`);
   log(`工作目录: ${PATHS.WORK_DIR}`);
@@ -2076,11 +2185,61 @@ function activate(context) {
     vscode.window.showInformationMessage('Feishu Trae Agent Bridge: 飞书 session 已重置');
   });
 
-  context.subscriptions.push(healthCmd, testCmd, testIcubeCmd, probeCmd, probeFeishuCmd, startCmd, stopCmd, resetSessionCmd);
+  // 网关命令：查看/启停适配器（生命周期可独立控制，互不影响）
+  const gwListCmd = vscode.commands.registerCommand('xiaot1.bridge.gateway.list', () => {
+    const items = listAdapters();
+    log(`[gateway] 适配器列表: ${JSON.stringify(items)}`);
+    vscode.window.showInformationMessage(`Gateway 适配器: ${items.map((a) => `${a.id}(${a.running ? '运行中' : '已停止'})`).join(', ') || '(无)'}`);
+  });
+  const gwStartAllCmd = vscode.commands.registerCommand('xiaot1.bridge.gateway.startAll', async () => {
+    await startAllAdapters();
+    log(`[gateway] startAll 完成: ${JSON.stringify(listAdapters())}`);
+    vscode.window.showInformationMessage('Gateway: 全部适配器已启动');
+  });
+  const gwStopAllCmd = vscode.commands.registerCommand('xiaot1.bridge.gateway.stopAll', async () => {
+    await stopAllAdapters();
+    log(`[gateway] stopAll 完成: ${JSON.stringify(listAdapters())}`);
+    vscode.window.showInformationMessage('Gateway: 全部适配器已停止');
+  });
+  const gwToggleCmd = vscode.commands.registerCommand('xiaot1.bridge.gateway.toggle', async () => {
+    const items = listAdapters();
+    if (items.length === 0) { vscode.window.showWarningMessage('Gateway: 无适配器'); return; }
+    const pick = await vscode.window.showQuickPick(
+      items.map((a) => ({ label: a.id, description: a.running ? '运行中' : '已停止' })),
+      { placeHolder: '选择要切换启停的适配器' }
+    );
+    if (!pick) return;
+    const cur = listAdapters().find((a) => a.id === pick.label);
+    if (cur && cur.running) await stopAdapter(cur.id); else await startAdapter(cur.id);
+    const now = listAdapters().find((a) => a.id === cur.id);
+    log(`[gateway] toggle ${cur.id} → ${now && now.running ? '运行中' : '已停止'}`);
+    vscode.window.showInformationMessage(`Gateway: ${cur.id} → ${now && now.running ? '运行中' : '已停止'}`);
+  });
 
-  // 保活：激活时自动启动桥接，保证飞书消息随时可达
-  log('[保活] 扩展已激活，自动启动飞书桥接...');
-  startFullBridge().catch((e) => log(`[保活] 自动启动失败: ${e.message}`));
+  context.subscriptions.push(healthCmd, testCmd, testIcubeCmd, probeCmd, probeFeishuCmd, startCmd, stopCmd, resetSessionCmd,
+    gwListCmd, gwStartAllCmd, gwStopAllCmd, gwToggleCmd);
+
+  // 网关：把飞书逻辑原位注册成内置 adapter（传输逻辑不搬家，仅包一层描述符）
+  registerAdapter(feishuAdapter);
+  log(`[gateway] 已注册适配器: ${listAdapters().map((a) => a.id).join(', ')}`);
+
+  // 保活：激活时经网关自动启动桥接，保证飞书消息随时可达（startAdapter 内含 try/catch 隔离）
+  log('[保活] 扩展已激活，经网关自动启动飞书桥接...');
+  startAdapter('feishu')
+    .then((ok) => { if (!ok) log('[保活] 飞书适配器启动失败，详见上文 gateway 日志'); })
+    .catch((e) => log(`[保活] 自动启动异常: ${e.message}`));
+
+  // 暴露给其他扩展的公开 API：VS Code 的 extension.exports 取 activate() 的返回值（不是 module.exports）
+  return {
+    registerInboundInterceptor,
+    registerAdapter,
+    registerOutboundHook,
+    listAdapters,
+    startAdapter,
+    stopAdapter,
+    startAllAdapters,
+    stopAllAdapters
+  };
 }
 
 function deactivate() {
@@ -2101,4 +2260,16 @@ function deactivate() {
   }
 }
 
-module.exports = { activate, deactivate };
+module.exports = {
+  activate,
+  deactivate,
+  // 网关公开 API（消费方应经 extension.exports 取 activate() 返回值；此处导出便于本地调试）
+  registerInboundInterceptor,
+  registerAdapter,
+  registerOutboundHook,
+  listAdapters,
+  startAdapter,
+  stopAdapter,
+  startAllAdapters,
+  stopAllAdapters
+};

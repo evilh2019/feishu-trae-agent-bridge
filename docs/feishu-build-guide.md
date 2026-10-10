@@ -2,6 +2,7 @@
 
 > 基于 2026-08-03 ~ 2026-08-05 探索与实现过程整理
 > 状态：端到端链路已打通 ✅（v0.1.2 保活自动重启 + 孤儿进程清理，只要 Trae 打开飞书即持续在线；飞书↔Trae Agent 双向通信已验证）
+> 演进规划见 [gateway-architecture.md](./gateway-architecture.md)：把飞书桥演进为「外部接入 + 增强」网关（P1 起基座暴露通用扩展点 `registerInboundInterceptor`，增强独立成扩展）。
 
 ---
 
@@ -70,6 +71,9 @@
 | v0.0.10 | 超时保护：maxWait 300s→600s + 30s 宽限期重试 + 立即首次检查 | ⚠️ 复杂任务触发超时恢复机制，简单任务仍秒级回复 |
 | v0.1.0 | 持久 session 复用：不再每条消息新建会话，飞书消息共享同一 session 保持上下文 | 🔄 首条消息创建 session，后续复用；支持 `/新对话` 重置 |
 | v0.1.1 | Session 智能复用策略 D + 全链路详细日志 + PERF 计时标签 | ✅ Session 丢失时自动复用当前 chat 面板会话；7 阶段时间戳覆盖所有退出路径；全链路结构化日志便于排查 |
+| v0.1.4 | 网关概念落地（P2）：adapter 注册表 + `OutboundHook` + 每适配器错误隔离，飞书逻辑原位注册为内置 adapter | ✅ TC-17 运行时验证；详见 gateway-architecture.md |
+| v0.1.5 | 固定话题：飞书会话按 `chat_id` 固定映射到一个 Trae session；修复 `/new` 检测（比对原始输入）与「重置后被复用策略抢回」两个 latent bug | 🔄 待运行时验证（TC-25~TC-28） |
+| v0.1.6 | 会话复用修复：去掉「策略 A 三格式盲发 + 策略 B 复用当前面板」的重复投递与串场，改为存档优先、全程单次发送、回读确认实际落点；超时阈值 30 分钟 → 12 小时 | 🔄 待运行时验证（TC-25~TC-28） |
 
 **关键实测数据**（bridge.log）：
 
@@ -144,11 +148,11 @@ Trae CN 有三条飞书集成路径，**当前采用路径 B+C 混合方案**：
 │                                                              │
 │  ② handleFeishuEvent:                                        │
 │     → [PERF] T1 开始处理时间戳                               │
-│     → Session 智能复用（4 级策略）:                          │
-│       策略 A: feishuSessionId 存在 → sessionId 参数复用      │
-│       策略 D: feishuSessionId 为 null → 复用当前 chat 面板会话│
-│       策略 B: 当前 session 匹配保存的 → 直接发送             │
-│       兜底: 所有策略失败 → 创建新 session                    │
+│     → 按 event.chat_id 载入该对话专属 session                │
+│     → Session 复用策略（forceNew 时跳过 A/B）:               │
+│       策略 A: 该对话已保存 sessionId → 参数复用              │
+│       策略 B/D: A 失败 → 复用当前面板会话（不新建）          │
+│       强制新建: /new 或超时后首条 → 跳过复用直接新建         │
 │     → [PERF] T2 发送开始 → T3 发送完成                       │
 │     → icube.chat.sendToAgentNonBlocking (sessionId 复用)     │
 │     → 消息格式: "[飞书消息] 用户说：xxx\n[系统指令] 写入文件: │
@@ -159,7 +163,7 @@ Trae CN 有三条飞书集成路径，**当前采用路径 B+C 混合方案**：
 │     → [PERF] T5 sideband 文件检测到                         │
 │     → 双重读取校验（防半截内容）                              │
 │     → 超时保护：30s 宽限期重试 + RECOVERY 恢复               │
-│     → Session 重置：/新对话 指令 + 30min 超时                │
+│     → Session 重置：/new 指令 + 30min 超时                   │
 │                                                              │
 │  ③ lark-cli im +messages-send --as bot --user-id <id>        │
 │     → [PERF] T7 飞书回复完成                                │
@@ -1259,6 +1263,8 @@ handleFeishuEvent:
 
 ### 10.4c v0.1.0 优化：持久 Session 复用 + 会话重置
 
+> ⚠️ 历史实现（v0.1.0）。已在 **v0.1.6（P2c）** 被替换为「按 `chat_id` 存档优先复用 + 全程单次发送 + 回读确认落点，超时 12 小时」，见 gateway-architecture.md §五 P2c。
+
 **问题**：v0.0.7~v0.0.10 每条飞书消息都用 `newSession: true` 创建新 session，导致 Agent 无法在多轮对话中保持上下文。
 
 **方案**：维护飞书专用持久 session，首条消息创建后复用。
@@ -1536,6 +1542,8 @@ async function tryReadSideband() {
 
 #### 12.3.3 持久 Session 复用（v0.1.0 + v0.1.1 增强）
 
+> ⚠️ 历史实现（v0.1.0/v0.1.1）。已在 **v0.1.6（P2c）** 被替换为「按 `chat_id` 存档优先复用 + 全程单次发送 + 回读确认落点，超时 12 小时」，见 gateway-architecture.md §五 P2c。
+
 ```javascript
 // Session 管理变量
 let feishuSessionId = null;
@@ -1629,6 +1637,8 @@ if (fs.existsSync(sidebandFile)) {
 ```
 
 #### 12.3.5 Session 智能复用 + 全链路日志 + PERF 计时（v0.1.1）
+
+> ⚠️ 历史实现（v0.1.1）。其中「4 级复用策略」已在 **v0.1.6（P2c）** 被替换为「按 `chat_id` 存档优先复用 + 全程单次发送 + 回读确认落点，超时 12 小时」，见 gateway-architecture.md §五 P2c。
 
 ##### 4 级 Session 复用策略
 
@@ -1779,9 +1789,9 @@ function sendFeishuReply(replyText) {
 - P2P 文本消息双向通信
 - 实时事件监听（lark-cli 长连接）
 - Sideband 文件协议回复读取
-- 持久 Session 多轮对话（4 级复用策略 A/B/D + 兜底）
+- 持久 Session 多轮对话（按 `chat_id` 固定映射；存档优先复用，全程单次发送，落点回读确认）
 - `/新对话` 指令重置会话
-- 30 分钟无消息自动重置
+- 12 小时无消息自动重置
 - 600s 超时保护 + 30s 宽限期恢复
 - 消息去重与排队处理
 - 全链路结构化日志（7 模块标签体系）
@@ -1834,6 +1844,7 @@ v0.0.10 (08-05) → 超时保护：600s + 30s 宽限期恢复（防消息丢失�
 v0.1.0 (08-05) → 持久 Session 复用 + 会话重置（支持多轮对话）
 v0.1.1 (08-05) → Session 智能复用策略 D + 全链路详细日志 + PERF 7 阶段计时
 v0.1.2 (08-05) → 保活自动重启（指数退避）+ 孤儿进程清理 + lark-cli 路径自动探测
+v0.1.3 (10-03) → 基座暴露通用扩展点 registerInboundInterceptor（具体增强外移独立扩展，见 gateway-architecture.md P1）；修正公开 API 暴露方式：改为 activate() 返回 { registerInboundInterceptor }（VS Code extension.exports 取 activate 返回值，非 module.exports）
 ```
 
 ## 十三、保活机制实现细节（v0.1.2）

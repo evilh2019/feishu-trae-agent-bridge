@@ -2,7 +2,7 @@
   "name": "feishu-trae-agent-bridge",
   "displayName": "Feishu Trae Agent Bridge",
   "description": "飞书消息到 Trae CN Agent 的桥接扩展 - 让飞书消息在 Trae Agent 中处理，支持多轮对话、保活自动重连、全链路日志和性能计时",
-  "version": "0.1.2",
+  "version": "0.1.6",
   "publisher": "evilh2019",
   "license": "MIT",
   "private": false,
@@ -39,6 +39,26 @@
       {
         "command": "xiaot1.bridge.probe",
         "title": "Feishu Trae Agent Bridge: Probe APIs (探索可用接口)",
+        "category": "Feishu Bridge"
+      },
+      {
+        "command": "xiaot1.bridge.gateway.list",
+        "title": "Feishu Trae Agent Bridge: Gateway: List Adapters (列出适配器)",
+        "category": "Feishu Bridge"
+      },
+      {
+        "command": "xiaot1.bridge.gateway.toggle",
+        "title": "Feishu Trae Agent Bridge: Gateway: Toggle Adapter (启停适配器)",
+        "category": "Feishu Bridge"
+      },
+      {
+        "command": "xiaot1.bridge.gateway.startAll",
+        "title": "Feishu Trae Agent Bridge: Gateway: Start All Adapters (启动全部适配器)",
+        "category": "Feishu Bridge"
+      },
+      {
+        "command": "xiaot1.bridge.gateway.stopAll",
+        "title": "Feishu Trae Agent Bridge: Gateway: Stop All Adapters (停止全部适配器)",
         "category": "Feishu Bridge"
       }
     ]

@@ -96,12 +96,14 @@ Bridge 发送消息 → Agent 收到指令写入 replies/<msgId>.txt
 Bridge 用 fs.watch + 自适应轮询检测文件 → 读取内容 → 发回飞书
 ```
 
-### Session 4 级复用策略
+### 会话复用：按 chat_id 固定映射
 
-1. **策略 A**：feishuSessionId 存在 → sessionId 参数复用
-2. **策略 D**：feishuSessionId 为 null → 复用当前 chat 面板会话
-3. **策略 B**：保存的 session 匹配 → 直接发送
-4. **兜底**：创建新 session
+- **默认**：一个飞书对话（`chat_id`）= 一个固定的 Trae 会话，同一对话内持续复用，不再每条消息新建话题
+- **跨对话隔离**：不同 `chat_id` → 各自独立的 Trae 会话
+- **复用策略**：只要该对话已保存 `sessionId` 就绝不新建 —— 当前面板即目标会话时直接发一次；否则单次定向发送到该 `sessionId`。全程单次投递，杜绝重复发送与串场
+- **新建会话的触发**：换新对话（新 `chat_id`）、发 `/新对话` `/reset` `/new` `/重置对话`、12 小时无消息超时，或该对话的首条消息
+- **落点确认**：发送后回读 `getCurrentSessionId` 兜底，把消息**实际落入**的 session 写回该 `chat_id` 的映射
+- **状态持久化**：`session_state.json` 存 `{ version: 2, chats: { <chat_id>: { sessionId, lastUsed } } }`
 
 ### PERF 7 阶段计时
 
@@ -117,7 +119,7 @@ Bridge 用 fs.watch + 自适应轮询检测文件 → 读取内容 → 发回飞
 
 ## ⚠️ 限制
 
-- 仅支持 P2P 消息（群聊未实现）
+- 主要面向 P2P 单聊；群聊回复已按来源 `chat_id` 路由，但未专门验证
 - 仅支持文本消息（图片/文件/卡片未处理）
 - lark-cli event consume 1 小时超时（已实现自动重启，重启瞬间约 3~5s 不可用）
 - 依赖 Agent 配合写 sideband 文件
