@@ -110,6 +110,7 @@ OutboundHook: (reply, ctx) -> Promise<string>
 | **P2** | 基座内补网关概念：adapter 注册表 + `OutboundHook` + 每适配器生命周期/错误隔离；飞书逻辑**原位**改成"注册成内置 adapter" | TC-16~TC-18 | 只加不删，Reload 回退 | ✅ 完成（基座 0.1.4：网关块 + 内置 `feishuAdapter` + 出站钩子；TC-17 运行时验证；TC-16/18 代码结构保证 ✅*） |
 | **P2b** | 固定话题：飞书会话按 `chat_id` 固定映射到 Trae session（每对话一个会话）；修复 `/new` 检测失效与「重置后被复用策略抢回」两个 latent bug，新增 `forceNew` 强制新建 | TC-25~TC-28 | 保留原单会话逻辑 / Reload 回退 | ✅ 完成（基座 0.1.5；三副本同步，`node --check` 通过） |
 | **P2c** | 会话复用修复：去掉「策略 A 三种参数盲发 + 策略 B 复用当前面板」带来的**重复投递**与**串场**，改为「存档优先复用、全程单次发送、回读确认实际落点」；超时阈值 30 分钟 → 12 小时 | TC-25~TC-28 | 保留旧复用逻辑 / Reload 回退 | ✅ 完成（基座 0.1.6；三副本同步，`node --check` 通过） |
+| **P2d** | 定位「超时无回复」根因：`sendToAgentNonBlocking` 只在**当前聚焦会话**里触发 agent，发往后台存档会话返回无 `sessionId`、消息被静默丢弃。改为「确认落点才复用，否则回退当前聚焦面板重发」；`/new` 与无面板时仍走新建 | TC-25~TC-28 | 保留 P2c 定向发送逻辑 / Reload 回退 | ✅ 完成（基座 0.1.7；三副本同步，`node --check` 通过） |
 | **P3** | 抽出 `TraeSessionDriver`（icube + sideband 关进接口） | 飞书链路行为不变；Trae 升级回归 | 保留原函数、开关切换 | ⬜ 待做 |
 | **P4** | 新增**第二个** adapter（HTTP 或 CLI）验证抽象 | TC-19 | 删新 adapter 即可 | ⬜ 待做 |
 | **P5** | 物理拆分：飞书 adapter 独立扩展，基座彻底通用化 | 全量用例回归 | 保留合并版 | ⬜ 待做 |
