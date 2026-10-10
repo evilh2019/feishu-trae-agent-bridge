@@ -2,7 +2,7 @@
   "name": "feishu-trae-agent-bridge",
   "displayName": "Feishu Trae Agent Bridge",
   "description": "飞书消息到 Trae CN Agent 的桥接扩展 - 让飞书消息在 Trae Agent 中处理，支持多轮对话、保活自动重连、全链路日志和性能计时",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "publisher": "evilh2019",
   "license": "MIT",
   "private": false,

@@ -1646,45 +1646,31 @@ async function trySendToAgent(message, sidebandFile, chatKey, rawContent) {
     log(`[Session] 当前面板会话: ${currentSession ? currentSession.substring(0, 12) + '...' : '(无)'}；已存 session: ${feishuSessionId ? feishuSessionId.substring(0, 12) + '...' : '(无)'}`);
   }
 
-  // A. 有存档且未强制新建 → 尝试复用
+  // A. 有存档且未强制新建 → 复用
+  // 关键：必须显式传 sessionId。实测不传 sessionId 时 sendToAgentNonBlocking 会静默
+  // no-op、返回无 sessionId，消息根本进不了会话（对照本仓库 09:53 成功日志）。
   let reused = false;
   if (feishuSessionId && !forceNew) {
-    if (currentSession === feishuSessionId) {
-      // A-1. 存档会话恰是当前聚焦面板 → 直接发送，agent 必然运行
-      log('[Session] ✅ 当前面板即目标会话，直接发送（复用）');
-      try {
-        sendResult = (await vscode.commands.executeCommand(
-          'icube.chat.sendToAgentNonBlocking',
-          [message],
-          { enableUnstableFields: true }
-        )) || {};
+    const samePanel = currentSession === feishuSessionId;
+    log(`[Session] 复用存档 session: ${feishuSessionId.substring(0, 12)}...${samePanel ? '（即当前面板）' : ''}`);
+    try {
+      const r = await vscode.commands.executeCommand(
+        'icube.chat.sendToAgentNonBlocking',
+        [message],
+        { enableUnstableFields: true, sessionId: feishuSessionId }
+      );
+      const gotId = r?.sessionId || null;
+      log(`[Session] 复用发送返回 sessionId: ${gotId ? gotId.substring(0, 12) + '...' : '无'}`);
+      if (gotId && gotId === feishuSessionId) {
+        sendResult = r;
         reused = true;
-        landedSessionId = sendResult?.sessionId || feishuSessionId;
-      } catch (e) {
-        log(`[Session] 复用发送失败: ${e.message?.substring(0, 60)}`);
-        sendResult = null;
+        landedSessionId = gotId;
+        log('[Session] ✅ 复用成功（已确认投递）');
+      } else {
+        log('[Session] ⚠️ 未确认投递（无返回 id），消息可能被静默丢弃 → 将回退当前面板重发');
       }
-    } else {
-      // A-2. 存档会话非当前面板 → 单次后台定向发送；只有返回同 id 才视为真正触发
-      log(`[Session] 当前面板非目标会话，单次定向发送到存档 session: ${feishuSessionId.substring(0, 12)}...`);
-      try {
-        const r = await vscode.commands.executeCommand(
-          'icube.chat.sendToAgentNonBlocking',
-          [message],
-          { enableUnstableFields: true, sessionId: feishuSessionId }
-        );
-        const gotId = r?.sessionId || null;
-        log(`[Session] 定向发送返回 sessionId: ${gotId ? gotId.substring(0, 12) + '...' : '无'}`);
-        if (gotId && gotId === feishuSessionId) {
-          sendResult = r;
-          reused = true;
-          landedSessionId = gotId;
-        } else {
-          log('[Session] ⚠️ 后台会话未触发 agent（无返回 id），消息可能被静默丢弃 → 将回退当前面板重发');
-        }
-      } catch (e) {
-        log(`[Session] 定向发送失败: ${e.message?.substring(0, 60)}`);
-      }
+    } catch (e) {
+      log(`[Session] 复用发送失败: ${e.message?.substring(0, 60)}`);
     }
   }
 
@@ -1693,10 +1679,11 @@ async function trySendToAgent(message, sidebandFile, chatKey, rawContent) {
     if (!forceNew && currentSession) {
       log(`[Session] ⚠️ 存档会话不可运行${feishuSessionId ? '（' + feishuSessionId.substring(0, 12) + '...）' : ''}，回退发送到当前面板: ${currentSession.substring(0, 12)}...`);
       try {
+        // 同样必须显式传 sessionId（不传会被静默丢弃）
         sendResult = (await vscode.commands.executeCommand(
           'icube.chat.sendToAgentNonBlocking',
           [message],
-          { enableUnstableFields: true }
+          { enableUnstableFields: true, sessionId: currentSession }
         )) || {};
         landedSessionId = sendResult?.sessionId || currentSession;
       } catch (e) {
@@ -2198,7 +2185,7 @@ function activate(context) {
 
   log('========================================');
   log('Feishu Trae Agent Bridge 扩展已激活');
-  log(`版本: 0.1.8 (会话复用修复：确认落点 + 失败回退当前面板；无回复自动重试最多 10 次)`);
+  log(`版本: 0.1.9 (关键修复：复用必须显式传 sessionId——不传会被静默丢弃；无回复自动重试最多 10 次)`);
   log(`激活时间: ${new Date().toISOString()}`);
   log(`lark-cli: ${PATHS.LARK_CLI || '(未找到)'}`);
   log(`工作目录: ${PATHS.WORK_DIR}`);
